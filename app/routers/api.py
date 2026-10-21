@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app import runtime_settings
+from app import runtime_settings, telemetry
 from app.claude_runner import ClaudeError, gate, run_claude
 from app.db import get_db
 from app.models import ApiToken, ChatSession, RequestLog
@@ -132,22 +132,30 @@ async def _logged(request: Request, db: Session, endpoint: str, handler: Handler
         http_status=500,
     )
     settings = runtime_settings.get_all(db)
+    log.trace_id = telemetry.current_trace_id()
+    code = None
     try:
         token = authenticate(db, raw_token)
         log.user_id, log.token_id, log.username = token.user_id, token.id, token.user.username
         return JSONResponse(await handler(token, settings, log), status_code=status_code)
     except APIError as e:
         log.status = "rejected" if e.status < 500 else "error"
-        log.http_status, log.error = e.status, e.message
+        log.http_status, log.error, code = e.status, e.message, e.code
         return JSONResponse(e.body(), status_code=e.status)
     except ClaudeError as e:
+        code = "upstream_error" if e.status != 504 else "timeout"
         log.status, log.http_status, log.error = "error", e.status, e.message
-        err = APIError(e.status, e.message, "server_error", "upstream_error" if e.status != 504 else "timeout")
+        err = APIError(e.status, e.message, "server_error", code)
         return JSONResponse(err.body(), status_code=e.status)
     finally:
         log.latency_ms = int((time.monotonic() - started) * 1000)
         db.add(log)
         db.commit()
+        telemetry.record_request(
+            endpoint=log.endpoint, status=log.status, http_status=log.http_status, code=code, model=log.model,
+            effort=log.effort, latency_ms=log.latency_ms, username=log.username, token_prefix=log.token_prefix,
+            chat_session_id=log.chat_session_id,
+        )  # fmt: skip
 
 
 def _authed(db: Session, request: Request) -> ApiToken:

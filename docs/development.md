@@ -96,6 +96,16 @@ Add `CLAUDE_BIN=tests/fake_claude.py` to the environment to get canned replies i
 - Verifying against the real CLI needs a logged-in Claude and costs quota, so ask the operator first.
   Never put a real token in a test.
 
+## Adding telemetry
+
+- **Metrics:** add the instrument to `_build_instruments()` in `app/telemetry.py` (the same function builds
+  the no-op set) and record through `telemetry.instruments()`. Keep label sets small and bounded: model,
+  effort and outcome are fine; user ids and session ids are not.
+- **Spans:** use `telemetry.tracer().start_as_current_span(...)`. Attributes are numbers, enums and ids,
+  **never message content**.
+- **Tests:** extend `tests/test_telemetry.py`, which captures everything with in-memory exporters. Its
+  privacy test must keep passing.
+
 ## Front-end changes
 
 - **No build step, frameworks or CDNs.** Plain `app/static/*.js` (IIFEs, event delegation) and `app.css`.

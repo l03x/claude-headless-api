@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app import runtime_settings
+from app import runtime_settings, telemetry
 from app.claude_runner import ClaudeError, claude_version, gate, run_claude
 from app.config import get_settings
 from app.db import get_db
@@ -733,7 +733,7 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
     log = RequestLog(
         endpoint="dashboard.chat", user_id=admin.id, username=admin.username, model=model, effort=effort,
         chat_session_id=session.id, client_ip=request.client.host if request.client else None,
-        status="error", http_status=500,
+        status="error", http_status=500, trace_id=telemetry.current_trace_id(),
     )  # fmt: skip
     try:
         gate.resize(int(settings["max_concurrency"]))
@@ -762,6 +762,11 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
         log.latency_ms = int((time.monotonic() - started) * 1000)
         db.add(log)
         db.commit()
+        telemetry.record_request(
+            endpoint=log.endpoint, status=log.status, http_status=log.http_status,
+            code=None if log.status == "ok" else "upstream_error", model=log.model, effort=log.effort,
+            latency_ms=log.latency_ms, username=log.username, token_prefix=None, chat_session_id=log.chat_session_id,
+        )  # fmt: skip
 
 
 @post("/chat/{session_id}/rename")

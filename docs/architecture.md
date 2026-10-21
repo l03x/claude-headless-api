@@ -159,6 +159,24 @@ models have and the table lacks (`ALTER TABLE … ADD COLUMN`). Other changes ar
 - **Not covered yet:** login brute-force protection, 2FA, audit log, TLS (use a reverse proxy). See
   [missing-features.md](missing-features.md).
 
+## Observability
+
+`app/telemetry.py` sets up OpenTelemetry when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (standard `OTEL_*`
+variables; see [operations.md](operations.md#observability-opentelemetry--grafana-alloy)). Otherwise it is
+a no-op, and the helpers it exposes (`claude_span`, `record_run`, `record_request`) cost nothing.
+
+- **Traces.**
+  - FastAPI and SQLAlchemy are auto-instrumented, but SQL statements carry no bound values.
+  - `run_claude()` opens `chat <model>`, with children `claude.queue_wait` (time at the concurrency gate)
+    and `claude.process` (the CLI run).
+  - A filtering span processor drops SQLAlchemy `connect` spans and SQL spans with no parent request.
+- **Metrics:** custom instruments are recorded in `run_claude()` and in `_logged()` / dashboard chat.
+  Observable gauges read the concurrency gate.
+- **Logs:** one `claude_api.requests` record per request, plus the server's own log lines, each carrying the
+  trace context. `RequestLog.trace_id` stores the trace ID for the dashboard.
+- **Content never leaves:** no prompt, system prompt or reply goes into telemetry, and
+  `tests/test_telemetry.py` asserts it.
+
 ## Documentation pipeline
 
 ```

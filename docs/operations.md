@@ -122,6 +122,47 @@ All of these are on the dashboard's **Settings** page and take effect immediatel
 | Database growing | Lower *Log retention*; set *Session retention*; keep *Log bodies* off |
 | Runaway cost per request | Set *Budget cap per request* |
 
+## Observability (OpenTelemetry → Grafana Alloy)
+
+The app can send **traces, metrics and logs** over OTLP. It is off until `OTEL_EXPORTER_OTLP_ENDPOINT` is
+set; add the variables to `.env`, then run `docker compose up -d`:
+
+| Variable | Default | |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (off) | Alloy's OTLP receiver: `http://alloy:4318` (HTTP) or `http://alloy:4317` (gRPC) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | or `grpc` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | e.g. `authorization=Basic …` when the receiver needs auth |
+| `OTEL_SERVICE_NAME` | `claude-headless-api` | |
+| `OTEL_RESOURCE_ATTRIBUTES` | — | e.g. `deployment.environment=prod` |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | always on | e.g. `parentbased_traceidratio` and `0.1` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` ms | |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` | `none` turns that signal off |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns everything off |
+
+**Alloy:** [`docs/examples/alloy.config.alloy`](examples/alloy.config.alloy) receives OTLP on 4317/4318 and sends
+traces to Tempo, metrics to Prometheus (remote write) and logs to Loki. It was checked to load on Alloy v1.21.
+
+**Networking:** the container must reach Alloy.
+- If Alloy runs in Docker on the same host, attach both to one network (for example an external network
+  added to `docker-compose.yml`) and use its service name.
+- If Alloy runs on the host itself, use `http://host.docker.internal:4318` together with
+  `extra_hosts: ["host.docker.internal:host-gateway"]`.
+
+What is sent:
+
+| Signal | Contents |
+|---|---|
+| Traces | One trace per request: the HTTP server span, SQL spans (statements only, never values), and `chat <model>` (GenAI conventions: model, effort, session mode, token usage, cost, outcome) with child spans `claude.queue_wait` and `claude.process`. Health checks and static files are not traced |
+| Metrics | `claude.runs` (by model, effort, session mode, outcome), `claude.run.duration`, `claude.queue.wait`, `claude.tokens` (by type), `claude.cost`, gauges `claude.in_flight` / `claude.queued` / `claude.concurrency_limit`, `api.requests` (by endpoint, status, error code), plus HTTP-server and DB-connection metrics |
+| Logs | One record per API or dashboard-chat request (endpoint, status, model, user, token prefix, latency), plus the server's own log lines, each carrying the trace ID |
+
+- **Prometheus names.** Alloy converts names: dots become underscores, units become suffixes and counters
+  get `_total`. For example, `claude.runs` → `claude_runs_total` and `claude.run.duration` →
+  `claude_run_duration_seconds`.
+- **Finding a request's trace.** Each request-log row in the dashboard shows its **Trace ID**; search for it
+  in Tempo.
+- **Privacy.** Prompts, system prompts and replies are never put in spans, metric labels or logs.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -138,6 +179,7 @@ All of these are on the dashboard's **Settings** page and take effect immediatel
 | A session "forgot" earlier turns | Transcript missing; it was rebuilt from stored messages | Check that `/data/claude` is on the volume; restore transcripts from backup |
 | Port already in use on `up` | Another service holds `PORT` | Change `PORT` in `.env` |
 | Stale styles after an upgrade | Browser cache | Hard-reload (Ctrl/Cmd + Shift + R) |
+| Nothing reaches Alloy | Endpoint unset or unreachable from the container | Check the startup log for `OpenTelemetry export enabled → …`; then test the port from inside the container: `docker compose exec api python -c "import socket; socket.create_connection(('alloy', 4318), 3); print('reachable')"` |
 
 Useful views: the dashboard **Logs** page (filter by status `error`), each log's detail page (full error
 text), and **System** (CLI version, token present, queue).

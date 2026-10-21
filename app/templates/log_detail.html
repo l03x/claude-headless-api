@@ -16,6 +16,7 @@
     <dt>Tokens</dt><dd>{{ log.input_tokens|num }} in · {{ log.output_tokens|num }} out · {{ log.cache_read_tokens|num }} cache read · {{ log.cache_creation_tokens|num }} cache write</dd>
     <dt>Cost</dt><dd>{{ log.cost_usd|cost }}</dd>
     <dt>Conversation</dt><dd class="mono">{% if log.chat_session_id %}<a href="/admin/sessions/{{ log.chat_session_id }}">{{ log.chat_session_id }}</a>{% else %}— (stateless){% endif %}</dd>
+    <dt>Trace</dt><dd class="mono">{{ log.trace_id or "— (OpenTelemetry export off)" }}</dd>
     <dt>Claude session</dt><dd class="mono">{{ log.session_id or "—" }}</dd>
   </dl>
 </div>

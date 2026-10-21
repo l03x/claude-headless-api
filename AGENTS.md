@@ -49,7 +49,10 @@ templates, vanilla JS and CSS (no build step), pytest.
    - Never log `CLAUDE_CODE_OAUTH_TOKEN`.
 9. **Don't pass `--bare` to `claude`.** It ignores OAuth and only reads `ANTHROPIC_API_KEY`, which breaks
    subscription auth.
-10. **Respect Anthropic's terms** (README → *Terms of use*). Don't build features that sell access, take
+10. **Telemetry carries no content.** Never put prompts, system prompts, replies or tokens into span
+    attributes, metric labels or log fields (`tests/test_telemetry.py` checks it). Record numbers and
+    identifiers only, through the helpers in `app/telemetry.py`.
+11. **Respect Anthropic's terms** (README → *Terms of use*). Don't build features that sell access, take
     payments for usage, or let a subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) serve users other than its
     owner. Multi-user deployments use `ANTHROPIC_API_KEY`. Don't present the project as Anthropic's.
 
@@ -100,6 +103,7 @@ Container (operator's deployment; see rule 3): `docker compose up -d --build`, l
 | `app/openai_schemas.py` | Pydantic request models; messages → (system prompt, prompt) conversion; `chat.completion` response builder |
 | `app/request_logs.py` | Fills `RequestLog` from a Claude result |
 | `app/ratelimit.py` | In-memory sliding-window limiter per token |
+| `app/telemetry.py` | OpenTelemetry setup (OTLP to Alloy, off by default) and the span, metric and log helpers |
 | `app/routers/api.py` | `/v1/*` and `/healthz`. `_logged()` wraps every endpoint that runs Claude |
 | `app/routers/admin.py` | Dashboard (`/admin/*`): HTML pages, POST-redirect-GET, `post()` = CSRF-protected POST route |
 | `app/routers/docs.py`, `app/api_docs.py` | `/docs` reference page built from the spec; `/openapi.json`, `/openapi.yaml`, `/llms.txt` |

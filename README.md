@@ -34,6 +34,7 @@ these terms without notice. If you are unsure about your case, [ask Anthropic](h
   - sessions, logs and settings;
   - a light/dark theme.
 - API reference at `/docs`, a brief for AI agents at `/llms.txt`.
+- OpenTelemetry traces, metrics and logs over OTLP (e.g. to Grafana Alloy), off unless configured.
 - Claude runs with no tools: a plain text model.
 
 ## Deploy
@@ -50,6 +51,7 @@ cp .env.example .env
 | `PORT` | Host port (default `8000`) |
 | `SESSION_COOKIE_SECURE` | `true` behind HTTPS |
 | `CLAUDE_CODE_VERSION` | Claude Code version baked into the image |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional: send OpenTelemetry data to Alloy, e.g. `http://alloy:4318`. See [operations](docs/operations.md#observability-opentelemetry--grafana-alloy) |
 
 ```bash
 docker compose up -d --build

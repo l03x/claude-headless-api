@@ -83,6 +83,7 @@ class RequestLog(Base):
     error: Mapped[str | None] = mapped_column(Text)
     client_ip: Mapped[str | None] = mapped_column(String(64))
     chat_session_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(32))  # OpenTelemetry trace, when export is on
     prompt: Mapped[str | None] = mapped_column(Text)
     response: Mapped[str | None] = mapped_column(Text)
 

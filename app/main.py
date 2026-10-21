@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import runtime_settings
+from app import __version__, runtime_settings, telemetry
 from app.config import get_settings
 from sqlalchemy import inspect, text
 
@@ -94,6 +94,7 @@ async def lifespan(_app: FastAPI):
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+    telemetry.shutdown()  # flush pending spans, metrics and logs
 
 
 def create_app() -> FastAPI:
@@ -104,7 +105,7 @@ def create_app() -> FastAPI:
     # with our own reference page at /docs.
     app = FastAPI(
         title="Claude Headless API",
-        version="1.0.0",
+        version=__version__,
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(api.router)
     app.include_router(admin.router)
     app.include_router(docs.router)
+    telemetry.setup(app, get_engine())  # no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set
 
     @app.exception_handler(LoginRequired)
     async def _login_required(request: Request, _exc: LoginRequired):

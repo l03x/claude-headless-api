@@ -5,12 +5,14 @@ import json
 import os
 import signal
 import tempfile
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app import telemetry
 from app.config import get_settings
 
 # Environment variables forwarded to the CLI; everything else in the server's env stays out.
@@ -206,36 +208,78 @@ async def run_claude(
         resume=resume,
     )
     persistent = bool(session_id or resume)
-    async with gate:
-        # Stateless runs get a fresh empty cwd so nothing is picked up or left behind.
-        if persistent:
-            workdir = nullcontext(str(sessions_workdir()))
-        else:
-            workdir = tempfile.TemporaryDirectory(prefix="claude-req-")
-        with workdir as cwd:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                    env=_child_env(),
-                    start_new_session=True,
-                )
-            except FileNotFoundError as e:
-                raise ClaudeError(f"Claude CLI not found: {argv[0]}", 500) from e
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout_s)
-            except asyncio.TimeoutError:
-                _kill(proc)
-                await proc.wait()
-                raise ClaudeError(f"Claude did not answer within {timeout_s:g}s.", 504) from None
-            except asyncio.CancelledError:
-                _kill(proc)
-                raise
+    mode = "resume" if resume else "new" if session_id else "stateless"
+    with telemetry.claude_span(model, effort, mode) as span:
+        queued_at = time.monotonic()
+        queue_span = telemetry.tracer().start_span("claude.queue_wait")
+        queue_wait = run_s = None
+        result, outcome, error = None, "error", None
+        try:
+            async with gate:
+                queue_wait = time.monotonic() - queued_at
+                queue_span.end()
+                started = time.monotonic()
+                with telemetry.tracer().start_as_current_span("claude.process"):
+                    returncode, stdout, stderr = await _run_process(argv, prompt, persistent, timeout_s)
+                run_s = time.monotonic() - started
+            result = parse_output(returncode, stdout, stderr)
+            outcome = "ok"
+            return result
+        except ClaudeError as e:
+            outcome, error = ("timeout" if e.status == 504 else "error"), e.message
+            raise
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            if queue_wait is None:  # cancelled or failed while still queued
+                queue_wait = time.monotonic() - queued_at
+                queue_span.end()
+            telemetry.record_run(
+                span,
+                model=model,
+                effort=effort,
+                mode=mode,
+                outcome=outcome,
+                queue_wait_s=queue_wait,
+                run_s=run_s,
+                usage=result.usage if result else None,
+                cost_usd=result.cost_usd if result else None,
+                error=error,
+            )
 
-    return parse_output(proc.returncode, stdout, stderr)
+
+async def _run_process(
+    argv: list[str], prompt: str, persistent: bool, timeout_s: float
+) -> tuple[int | None, bytes, bytes]:
+    # Stateless runs get a fresh empty cwd so nothing is picked up or left behind.
+    if persistent:
+        workdir = nullcontext(str(sessions_workdir()))
+    else:
+        workdir = tempfile.TemporaryDirectory(prefix="claude-req-")
+    with workdir as cwd:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=_child_env(),
+                start_new_session=True,
+            )
+        except FileNotFoundError as e:
+            raise ClaudeError(f"Claude CLI not found: {argv[0]}", 500) from e
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout_s)
+        except asyncio.TimeoutError:
+            _kill(proc)
+            await proc.wait()
+            raise ClaudeError(f"Claude did not answer within {timeout_s:g}s.", 504) from None
+        except asyncio.CancelledError:
+            _kill(proc)
+            raise
+    return proc.returncode, stdout, stderr
 
 
 def parse_output(returncode: int | None, stdout: bytes, stderr: bytes) -> ClaudeResult:

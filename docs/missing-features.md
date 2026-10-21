@@ -64,8 +64,8 @@ not yet verified against the real Claude CLI.
 
 | Feature | Status | Today | What adding it would take |
 |---|---|---|---|
-| Metrics (Prometheus) and tracing | Not supported | The dashboard overview and the request log only. | A `/metrics` endpoint (request counts, latency, queue depth, cost) and OpenTelemetry spans around each CLI run. |
-| Alerting | Not supported | — | Alert on error rate, queue depth and authentication failures of the CLI (for example an expired OAuth token). |
+| Metrics and tracing | Supported | OpenTelemetry over OTLP (e.g. to Grafana Alloy), off unless configured. See operations.md. | A ready-made Grafana dashboard; a pull-based `/metrics` endpoint for setups without a collector. |
+| Alerting | Not supported | Metrics exist, but no rules ship with the project. | Example alert rules: error rate, queue depth, `claude.runs{outcome="error"}` spikes (for example an expired OAuth token). |
 | Claude Code updates | By design | The CLI version is pinned in the image (`CLAUDE_CODE_VERSION`) and auto-update is disabled. | Rebuild the image with a new version. A dashboard notice when a newer version exists would help. |
 | End-to-end tests with the real CLI | Not supported | All tests use `tests/fake_claude.py`, so they cost nothing but cannot catch CLI changes. | An opt-in test suite (environment variable with a real token) run before upgrading `CLAUDE_CODE_VERSION`. |
 | Backups | Not supported | Everything lives in the `claude-api-data` volume. | A scheduled SQLite `.backup` plus a copy of `/data/claude`, or a documented volume-snapshot procedure. |

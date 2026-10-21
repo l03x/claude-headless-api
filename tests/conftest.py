@@ -15,6 +15,9 @@ os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat01-test-token-value"
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 # Real env vars beat values from a developer's .env, so these keep tests independent of it.
 os.environ["SESSION_COOKIE_SECURE"] = "false"
+# Never export from tests; tests/test_telemetry.py injects in-memory exporters instead.
+os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+os.environ["OTEL_SDK_DISABLED"] = "true"
 sys.path.insert(0, str(HERE.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402

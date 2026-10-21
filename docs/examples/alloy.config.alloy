@@ -1,0 +1,52 @@
+// Grafana Alloy: receive OTLP from Claude Headless API and fan it out to Tempo, Prometheus and Loki.
+// Point the app at it with OTEL_EXPORTER_OTLP_ENDPOINT=http://<alloy-host>:4318 (or :4317 with
+// OTEL_EXPORTER_OTLP_PROTOCOL=grpc). Replace the three backend URLs with yours.
+
+otelcol.receiver.otlp "default" {
+  grpc { endpoint = "0.0.0.0:4317" }
+  http { endpoint = "0.0.0.0:4318" }
+
+  output {
+    traces  = [otelcol.processor.batch.default.input]
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    traces  = [otelcol.exporter.otlp.tempo.input]
+    metrics = [otelcol.exporter.prometheus.default.input]
+    logs    = [otelcol.exporter.loki.default.input]
+  }
+}
+
+// Traces → Tempo (OTLP gRPC)
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls { insecure = true }
+  }
+}
+
+// Metrics → Prometheus (remote write; Prometheus needs --web.enable-remote-write-receiver)
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// Logs → Loki
+otelcol.exporter.loki "default" {
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
