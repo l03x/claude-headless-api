@@ -9,7 +9,8 @@ that matches your task:
 | Add an endpoint, a setting, a column, a dashboard page; change the spec | [docs/development.md](docs/development.md) |
 | Deploy, upgrade, back up, rotate the Claude token, troubleshoot | [docs/operations.md](docs/operations.md) |
 | *Call* the API from an agent (consumer side) | [docs/agent-api-guide.md](docs/agent-api-guide.md), served at `/llms.txt` |
-| Know what is deliberately missing | [docs/missing-features.md](docs/missing-features.md) |
+| See what isn't built yet | [docs/missing-features.md](docs/missing-features.md) |
+| Know which choices are deliberate (don't "fix" them) | [docs/architecture.md → Design decisions](docs/architecture.md#design-decisions) |
 
 ## What this is
 

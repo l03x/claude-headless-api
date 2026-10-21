@@ -1,10 +1,10 @@
 # Missing features and known limitations
 
-What Claude Headless API does **not** do yet, why, and what adding it would take. Items are grouped by
-area. Within each group the most useful ones come first.
+What Claude Headless API does **not** do yet, and what adding it would take. Items are grouped by area.
+Within each group the most useful ones come first. Choices that are deliberate rather than missing are listed in
+[architecture.md → Design decisions](architecture.md#design-decisions).
 
-Legend: **Not supported** = rejected or ignored today · **Partial** = works with caveats · **Untested** = built but
-not yet verified against the real Claude CLI.
+Legend: **Not supported** = rejected or ignored today · **Partial** = works with caveats.
 
 ---
 
@@ -19,7 +19,6 @@ not yet verified against the real Claude CLI.
 | `finish_reason` other than `stop` | Not supported | Always `stop`, even if a budget cap cut the run short. | Map the CLI's `stop_reason` / `terminal_reason` (`max_tokens`, budget exceeded, …) to `length` and similar values. |
 | Image, audio and file input | Not supported | Non-text content parts are rejected with `400`. | Save attachments to a per-request directory and reference them in the prompt, enabling the `Read` tool for that directory only. This needs care so one user cannot read another's files. |
 | Tool / function calling (`tools`, `tool_choice`, `tool` messages) | Not supported | Claude runs with `--tools ""`; `tool`/`function` messages are rejected. | Translate OpenAI tool definitions into an MCP server passed with `--mcp-config` that hands calls back to the client. That is a large change, because the client must take part in the loop. |
-| Structured output (`response_format: json_schema`) | Untested | Passed to `claude --json-schema`; the reply is read from `structured_output`. Not yet verified with a real Claude login. | Verify against the real CLI and add an integration test. |
 | `response_format: json_object` | Partial | Only adds "respond with a single JSON object" to the system prompt; the output is not validated. | Validate the reply and retry once if it is not valid JSON, or route it through `--json-schema` with `{"type": "object"}`. |
 | Anthropic Messages API (`POST /v1/messages`) | Not supported | Only the OpenAI shape is offered. | Add a second router that maps the Messages format onto the same runner; most of the logic (auth, logging, sessions) is shared. |
 | Stateless multi-turn history | Partial | Earlier turns are flattened into a tagged transcript inside one prompt, not sent as real conversation turns. | Use sessions for true multi-turn. For stateless calls, write a temporary Claude Code transcript and `--resume` it. |
@@ -30,7 +29,6 @@ not yet verified against the real Claude CLI.
 
 | Feature | Status | Today | What adding it would take |
 |---|---|---|---|
-| Real-CLI verification of `--session-id` / `--resume` | Untested | Covered by tests that use a fake CLI writing transcripts where the real one does. Not yet run against a logged-in Claude. | Run one session end to end with a real token and add it as an opt-in integration test. |
 | Edit, regenerate or delete a single message | Not supported | Messages are append-only. | Fork the Claude session (`--resume <id> --fork-session`) at the edited turn and keep a parent pointer per message. |
 | Branching / forking a conversation | Not supported | — | Same mechanism as above, exposed as `POST /v1/sessions/{id}/fork`. |
 | Changing the system prompt mid-session | Not supported | Fixed when the session is created. | Start a new Claude session rebuilt from the stored history with the new prompt. The rebuild path already exists. |
@@ -43,7 +41,7 @@ not yet verified against the real Claude CLI.
 | Feature | Status | Today | What adding it would take |
 |---|---|---|---|
 | More than one worker or replica | Not supported | Must run a **single** Uvicorn worker: the rate limiter, the concurrency gate and the per-session locks live in process memory. | Move those to Redis (or database row locks), then run several workers or containers behind a load balancer. Claude transcripts would need shared storage. |
-| Databases other than SQLite | Untested | `DATABASE_URL` is configurable and SQLAlchemy is used throughout, but only SQLite is tested. | Add a `psycopg` driver and run the test suite against PostgreSQL. |
+| PostgreSQL / other databases | Not supported | Only SQLite is used and tested, although `DATABASE_URL` is configurable and the code goes through SQLAlchemy. | Add a `psycopg` driver, make the schema upgrade work on PostgreSQL, and run the suite against it. |
 | Schema migrations | Partial | New nullable columns are added automatically at startup; renames, type changes and drops are not. | Adopt Alembic with versioned migrations. |
 | Horizontal session storage | Not supported | Transcripts are files under `/data/claude` on one volume. | Shared volume (NFS) or object-storage sync, plus the locking above. |
 
@@ -58,14 +56,11 @@ not yet verified against the real Claude CLI.
 | Self-service portal for API users | Not supported | API users cannot log in; only admins create, rotate or revoke tokens. | A user area to see one's own usage, sessions and tokens and to rotate them. |
 | Usage quotas and spend budgets | Not supported | Only requests per minute per token and a per-request budget cap. | Daily or monthly request / token / cost quotas per user or token, checked before each run. |
 | Token rotation with overlap | Not supported | Revoke and create a new token. | A "rotate" action that issues a new token and keeps the old one valid for a grace period. |
-| TLS | Not supported | The container speaks plain HTTP. | Put a TLS-terminating reverse proxy in front (Caddy, Traefik, nginx) and set `SESSION_COOKIE_SECURE=true`. |
 
 ## Operations
 
 | Feature | Status | Today | What adding it would take |
 |---|---|---|---|
-| Metrics and tracing | Supported | OpenTelemetry over OTLP, plus a ready-made Grafana stack and dashboard in `grafana/`. | A pull-based `/metrics` endpoint for setups without a collector. |
+| Prometheus `/metrics` endpoint (pull) | Not supported | Metrics are only pushed over OTLP, so a collector such as Alloy is required. | Expose the OTel meter through a Prometheus exporter at `/metrics` for setups that scrape instead of receiving pushes. |
 | Alerting | Not supported | Metrics exist, but no rules ship with the project. | Example alert rules: error rate, queue depth, `claude.runs{outcome="error"}` spikes (for example an expired OAuth token). |
-| Claude Code updates | By design | The CLI version is pinned in the image (`CLAUDE_CODE_VERSION`) and auto-update is disabled. | Rebuild the image with a new version. A dashboard notice when a newer version exists would help. |
-| End-to-end tests with the real CLI | Not supported | All tests use `tests/fake_claude.py`, so they cost nothing but cannot catch CLI changes. | An opt-in test suite (environment variable with a real token) run before upgrading `CLAUDE_CODE_VERSION`. |
-| Backups | Not supported | Everything lives in the `claude-api-data` volume. | A scheduled SQLite `.backup` plus a copy of `/data/claude`, or a documented volume-snapshot procedure. |
+| Automated backups | Not supported | A manual backup and restore procedure is in [operations.md](operations.md#backups); nothing runs on a schedule. | A scheduled SQLite backup plus a copy of `/data/claude`, with rotation. |

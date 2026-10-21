@@ -2,6 +2,23 @@
 
 How Claude Headless API is put together and why. For day-to-day rules see [AGENTS.md](../AGENTS.md).
 
+## Design decisions
+
+Deliberate choices. They can look like gaps, so don't "fix" them without discussing the trade-off first.
+
+| Decision | Why |
+|---|---|
+| Claude runs with no tools (`--tools ""`), empty settings and no MCP servers | It's an LLM API, not an agent host. Claude can't run commands or read files on the server, and every caller gets the same behaviour regardless of what is on disk |
+| Unknown OpenAI parameters (`temperature`, `max_tokens`, …) are accepted and ignored, not rejected | Existing OpenAI clients send them by default. Rejecting them would break drop-in compatibility for settings the CLI can't honour anyway |
+| The Claude Code version is pinned in the image (`CLAUDE_CODE_VERSION`), auto-update is off | A CLI update can change flags or output. Upgrades happen on rebuild, after a check |
+| No `--bare` flag | It disables OAuth, which `CLAUDE_CODE_OAUTH_TOKEN` needs |
+| One container, one Uvicorn worker, SQLite on a volume | Simple to run on-prem with one `docker compose up`. The rate limiter, concurrency gate and session locks are in process memory because of it (scaling out is in missing-features.md) |
+| Plain HTTP inside the container | TLS belongs to a reverse proxy in front (Caddy, Traefik, nginx), with `SESSION_COOKIE_SECURE=true` |
+| Prompts and replies of stateless requests are not stored unless *Log bodies* is on; session messages always are | Privacy by default; a session is useless without its history |
+| Telemetry is off by default and never carries message content | Opt-in export, and observability data must not become a copy of users' conversations |
+| The OpenAPI spec is hand-written (`docs/openapi.yaml`); FastAPI's generated spec and Swagger UI are off | Endpoints parse bodies themselves, so the generated spec would be incomplete. The hand-written one is tested against real responses |
+| The dashboard UI uses no frameworks or CDNs | It must work offline and on-prem with no build step |
+
 ## Big picture
 
 ```
