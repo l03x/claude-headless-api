@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: claude-headless-api
+    folder: Claude Headless API
+    type: file
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

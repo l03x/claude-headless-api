@@ -1,0 +1,16 @@
+# Joins the app to the observability stack and turns on OpenTelemetry export. From the repository root:
+#
+#   docker compose -f docker-compose.yml -f grafana/app.compose.yml up -d
+#
+# (Start the stack in grafana/ first: it creates the claude-observability network.)
+services:
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    networks: [default, observability]
+
+networks:
+  observability:
+    name: claude-observability
+    external: true

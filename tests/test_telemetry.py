@@ -100,7 +100,10 @@ def test_metrics_and_logs(otel, make_token):
     tokens = {p.attributes["gen_ai.token.type"]: p.value for p in metric_points(reader, "claude.tokens")}
     assert tokens == {"input": 10, "output": 5, "cache_read": 100, "cache_creation": 3}
     assert metric_points(reader, "claude.cost")[0].value == pytest.approx(0.0123)
-    assert metric_points(reader, "claude.run.duration") and metric_points(reader, "claude.queue.wait")
+    (run,) = metric_points(reader, "claude.run.duration")
+    assert tuple(run.explicit_bounds) == telemetry.RUN_BUCKETS_S  # seconds-sized buckets, not the ms defaults
+    (wait,) = metric_points(reader, "claude.queue.wait")
+    assert tuple(wait.explicit_bounds) == telemetry.QUEUE_BUCKETS_S
     requests = {(p.attributes["status"], p.attributes["error.type"]): p.value for p in metric_points(reader, "api.requests")}
     assert requests == {("ok", ""): 1, ("rejected", "model_not_found"): 1}
     for gauge in ("claude.in_flight", "claude.queued", "claude.concurrency_limit"):
@@ -112,6 +115,9 @@ def test_metrics_and_logs(otel, make_token):
     assert len(request_records) == 2
     ok = next(r for r in request_records if r.attributes["status"] == "ok")
     assert ok.attributes["model"] == "haiku" and ok.attributes["user"] == "alice" and ok.trace_id
+    # Usage numbers ride along, so Loki can sum tokens and cost per user or token.
+    assert ok.attributes["input_tokens"] == 10 and ok.attributes["output_tokens"] == 5
+    assert ok.attributes["cost_usd"] == pytest.approx(0.0123) and ok.attributes["token_prefix"].startswith("chk_")
 
 
 def test_failed_run_marks_span_error(otel, make_token, monkeypatch):

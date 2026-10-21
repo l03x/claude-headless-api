@@ -36,6 +36,12 @@ DEFAULT_SERVICE_NAME = "claude-headless-api"
 EXCLUDED_URLS = "healthz,static/,favicon.ico"
 
 
+# The SDK's default buckets (0, 5, 10, 25, …) suit milliseconds; in seconds they would put every run in
+# one bucket and make the percentiles meaningless.
+RUN_BUCKETS_S = (0.5, 1, 2, 3, 5, 7.5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600)
+QUEUE_BUCKETS_S = (0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300)
+
+
 @dataclass
 class _Instruments:
     runs: Any
@@ -63,10 +69,16 @@ def _build_instruments(meter) -> _Instruments:
     return _Instruments(
         runs=meter.create_counter("claude.runs", unit="{run}", description="Claude CLI runs by outcome"),
         run_duration=meter.create_histogram(
-            "claude.run.duration", unit="s", description="Time the Claude CLI process ran (excludes queueing)"
+            "claude.run.duration",
+            unit="s",
+            description="Time the Claude CLI process ran (excludes queueing)",
+            explicit_bucket_boundaries_advisory=RUN_BUCKETS_S,
         ),
         queue_wait=meter.create_histogram(
-            "claude.queue.wait", unit="s", description="Time spent waiting for a free Claude slot"
+            "claude.queue.wait",
+            unit="s",
+            description="Time spent waiting for a free Claude slot",
+            explicit_bucket_boundaries_advisory=QUEUE_BUCKETS_S,
         ),
         tokens=meter.create_counter("claude.tokens", unit="{token}", description="Tokens reported by Claude Code"),
         cost=meter.create_counter("claude.cost", unit="{USD}", description="Cost reported by Claude Code"),
@@ -313,33 +325,42 @@ def record_run(span, *, model: str, effort: str, mode: str, outcome: str, queue_
         span.set_status(Status(StatusCode.ERROR, (error or outcome)[:200]))
 
 
-def record_request(*, endpoint: str, status: str, http_status: int, code: str | None, model: str | None,
-                   effort: str | None, latency_ms: int | None, username: str | None, token_prefix: str | None,
-                   chat_session_id: str | None) -> None:  # fmt: skip
-    """Count a finished API/dashboard request and emit one structured log record for it."""
+def record_request(log, *, code: str | None) -> None:
+    """Count a finished API/dashboard request and emit one structured log record for it.
+
+    `log` is the request's RequestLog row. The log record carries its metadata and usage numbers
+    (never prompt or reply text), so per-user and per-token usage can be summed in Loki.
+    """
     instruments().requests.add(
-        1, {"endpoint": endpoint, "status": status, "http.response.status_code": http_status, "error.type": code or ""}
-    )
+        1,
+        {"endpoint": log.endpoint, "status": log.status, "http.response.status_code": log.http_status,
+         "error.type": code or ""},
+    )  # fmt: skip
     if not _state.enabled:
         return
     fields = {
-        "endpoint": endpoint,
-        "status": status,
-        "http_status": http_status,
+        "endpoint": log.endpoint,
+        "status": log.status,
+        "http_status": log.http_status,
         "error_code": code,
-        "model": model,
-        "effort": effort,
-        "latency_ms": latency_ms,
-        "user": username,
-        "token_prefix": token_prefix,
-        "chat_session_id": chat_session_id,
+        "model": log.model,
+        "effort": log.effort,
+        "latency_ms": log.latency_ms,
+        "user": log.username,
+        "token_prefix": log.token_prefix,
+        "chat_session_id": log.chat_session_id,
+        "input_tokens": log.input_tokens,
+        "output_tokens": log.output_tokens,
+        "cache_read_tokens": log.cache_read_tokens,
+        "cache_creation_tokens": log.cache_creation_tokens,
+        "cost_usd": log.cost_usd,
     }
     request_logger.log(
-        logging.WARNING if status == "error" else logging.INFO,
+        logging.WARNING if log.status == "error" else logging.INFO,
         "%s %s %s",
-        endpoint,
-        http_status,
-        status,
+        log.endpoint,
+        log.http_status,
+        log.status,
         extra={k: v for k, v in fields.items() if v is not None},  # OTel attributes can't be None
     )
 

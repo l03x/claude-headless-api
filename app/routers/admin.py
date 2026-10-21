@@ -762,11 +762,7 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
         log.latency_ms = int((time.monotonic() - started) * 1000)
         db.add(log)
         db.commit()
-        telemetry.record_request(
-            endpoint=log.endpoint, status=log.status, http_status=log.http_status,
-            code=None if log.status == "ok" else "upstream_error", model=log.model, effort=log.effort,
-            latency_ms=log.latency_ms, username=log.username, token_prefix=None, chat_session_id=log.chat_session_id,
-        )  # fmt: skip
+        telemetry.record_request(log, code=None if log.status == "ok" else "upstream_error")
 
 
 @post("/chat/{session_id}/rename")

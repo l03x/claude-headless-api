@@ -64,7 +64,7 @@ not yet verified against the real Claude CLI.
 
 | Feature | Status | Today | What adding it would take |
 |---|---|---|---|
-| Metrics and tracing | Supported | OpenTelemetry over OTLP (e.g. to Grafana Alloy), off unless configured. See operations.md. | A ready-made Grafana dashboard; a pull-based `/metrics` endpoint for setups without a collector. |
+| Metrics and tracing | Supported | OpenTelemetry over OTLP, plus a ready-made Grafana stack and dashboard in `grafana/`. | A pull-based `/metrics` endpoint for setups without a collector. |
 | Alerting | Not supported | Metrics exist, but no rules ship with the project. | Example alert rules: error rate, queue depth, `claude.runs{outcome="error"}` spikes (for example an expired OAuth token). |
 | Claude Code updates | By design | The CLI version is pinned in the image (`CLAUDE_CODE_VERSION`) and auto-update is disabled. | Rebuild the image with a new version. A dashboard notice when a newer version exists would help. |
 | End-to-end tests with the real CLI | Not supported | All tests use `tests/fake_claude.py`, so they cost nothing but cannot catch CLI changes. | An opt-in test suite (environment variable with a real token) run before upgrading `CLAUDE_CODE_VERSION`. |

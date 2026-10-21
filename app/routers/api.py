@@ -151,11 +151,7 @@ async def _logged(request: Request, db: Session, endpoint: str, handler: Handler
         log.latency_ms = int((time.monotonic() - started) * 1000)
         db.add(log)
         db.commit()
-        telemetry.record_request(
-            endpoint=log.endpoint, status=log.status, http_status=log.http_status, code=code, model=log.model,
-            effort=log.effort, latency_ms=log.latency_ms, username=log.username, token_prefix=log.token_prefix,
-            chat_session_id=log.chat_session_id,
-        )  # fmt: skip
+        telemetry.record_request(log, code=code)
 
 
 def _authed(db: Session, request: Request) -> ApiToken:

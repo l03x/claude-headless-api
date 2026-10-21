@@ -1,0 +1,71 @@
+name: claude-observability
+
+services:
+  alloy:
+    image: grafana/alloy:v1.21.0
+    command: [run, --server.http.listen-addr=0.0.0.0:12345, --storage.path=/var/lib/alloy/data, /etc/alloy/config.alloy]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "127.0.0.1:${ALLOY_OTLP_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${ALLOY_OTLP_HTTP_PORT:-4318}:4318"
+      - "127.0.0.1:${ALLOY_UI_PORT:-12345}:12345"
+    depends_on: [prometheus, loki, tempo]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-remote-write-receiver   # Alloy and Tempo push here
+      - --enable-feature=exemplar-storage    # metric → trace links in Grafana
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.9
+    command: [-config.file=/etc/loki/loki.yml]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.10.9
+    command: [-config.file=/etc/tempo/tempo.yml]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    depends_on: [prometheus, loki, tempo]
+    restart: unless-stopped
+
+networks:
+  default:
+    name: claude-observability   # fixed name, so the app can join it (see app.compose.yml)
+
+volumes:
+  alloy-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:

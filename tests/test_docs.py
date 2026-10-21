@@ -148,7 +148,10 @@ def test_docs_page_and_spec_endpoints(client):
 
 # --- Markdown docs stay truthful -----------------------------------------------
 
-MARKDOWN = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CLAUDE.md", *sorted((ROOT / "docs").glob("*.md"))]
+MARKDOWN = [
+    ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CLAUDE.md", ROOT / "grafana" / "README.md",
+    *sorted((ROOT / "docs").glob("*.md")),
+]  # fmt: skip
 
 
 @pytest.mark.parametrize("doc", MARKDOWN, ids=lambda p: str(p.relative_to(ROOT)))
@@ -170,3 +173,22 @@ def test_agents_md_repo_map_paths_exist():
     for cell in re.findall(r"^\| (`[^|]+`) \|", table, flags=re.M):
         for path in re.findall(r"`([^`]+)`", cell):
             assert (ROOT / path.rstrip("/")).exists(), f"AGENTS.md maps a missing path: {path}"
+
+
+def test_dashboard_queries_use_existing_metrics():
+    """Every app metric the Grafana dashboard queries must still be emitted by app/telemetry.py."""
+    import json
+    import re
+
+    source = (ROOT / "app" / "telemetry.py").read_text()
+    emitted = {name.replace(".", "_") for name in re.findall(r'create_\w+\(\s*"([a-z_.]+)"', source)}
+    assert {"claude_runs", "claude_run_duration", "api_requests"} <= emitted
+
+    dashboard = json.loads((ROOT / "grafana" / "dashboards" / "claude-headless-api.json").read_text())
+    exprs = [t["expr"] for p in dashboard["panels"] for t in p.get("targets", []) if "expr" in t and t["datasource"]["type"] == "prometheus"]
+    assert exprs
+    used = {m for e in exprs for m in re.findall(r"\b((?:claude|api)_[a-z_]+)\{", e)}  # metric{…}, not labels
+    assert len(used) >= 8
+    suffixes = re.compile(r"(_seconds)?(_total|_bucket|_sum|_count)?$")
+    missing = sorted(m for m in used if suffixes.sub("", m) not in emitted)
+    assert not missing, f"dashboard queries metrics the app no longer emits: {missing}"

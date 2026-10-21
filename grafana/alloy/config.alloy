@@ -1,6 +1,5 @@
-// Grafana Alloy: receive OTLP from Claude Headless API and fan it out to Tempo, Prometheus and Loki.
-// Point the app at it with OTEL_EXPORTER_OTLP_ENDPOINT=http://<alloy-host>:4318 (or :4317 with
-// OTEL_EXPORTER_OTLP_PROTOCOL=grpc). Replace the three backend URLs with yours.
+// Receives OTLP from Claude Headless API and routes it: traces → Tempo, metrics → Prometheus, logs → Loki.
+// Works as-is inside grafana/docker-compose.yml; elsewhere, replace the three backend addresses.
 
 otelcol.receiver.otlp "default" {
   grpc { endpoint = "0.0.0.0:4317" }
@@ -17,7 +16,7 @@ otelcol.processor.batch "default" {
   output {
     traces  = [otelcol.exporter.otlp.tempo.input]
     metrics = [otelcol.exporter.prometheus.default.input]
-    logs    = [otelcol.exporter.loki.default.input]
+    logs    = [otelcol.exporter.otlphttp.loki.input]
   }
 }
 
@@ -29,24 +28,23 @@ otelcol.exporter.otlp "tempo" {
   }
 }
 
-// Metrics → Prometheus (remote write; Prometheus needs --web.enable-remote-write-receiver)
+// Metrics → Prometheus (remote write). service.name becomes the `job` label.
 otelcol.exporter.prometheus "default" {
   forward_to = [prometheus.remote_write.default.receiver]
 }
 
 prometheus.remote_write "default" {
   endpoint {
-    url = "http://prometheus:9090/api/v1/write"
+    url            = "http://prometheus:9090/api/v1/write"
+    send_exemplars = true
   }
 }
 
-// Logs → Loki
-otelcol.exporter.loki "default" {
-  forward_to = [loki.write.default.receiver]
-}
-
-loki.write "default" {
-  endpoint {
-    url = "http://loki:3100/loki/api/v1/push"
+// Logs → Loki's native OTLP endpoint (service.name becomes the `service_name` label,
+// trace_id/span_id become structured metadata).
+otelcol.exporter.otlphttp "loki" {
+  client {
+    endpoint = "http://loki:3100/otlp"
+    tls { insecure = true }
   }
 }

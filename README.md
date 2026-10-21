@@ -1,5 +1,10 @@
 # Claude Headless API
 
+![Claude Code](https://img.shields.io/badge/Claude%20Code-%23D97757.svg?style=for-the-badge&logo=claudecode&logoColor=white)
+![FastAPI](https://img.shields.io/badge/fastapi-%23009688.svg?style=for-the-badge&logo=fastapi&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/sqlalchemy-%23D71F00.svg?style=for-the-badge&logo=sqlalchemy&logoColor=white)
+![SQLite](https://img.shields.io/badge/sqlite-%2307405e.svg?style=for-the-badge&logo=sqlite&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)
 An OpenAI-compatible LLM API backed by Claude Code's headless mode (`claude -p`), with API-token auth,
 server-side sessions and an admin dashboard. One Docker container.
 
@@ -13,12 +18,12 @@ Every request runs the official Claude Code CLI, so Anthropic's terms apply to h
 is a summary of Anthropic's [Claude Code legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance),
 not legal advice:
 
-| | |
-|---|---|
-| ✅ **Subscription token for yourself** | `CLAUDE_CODE_OAUTH_TOKEN` (Free/Pro/Max) is meant for the subscriber's own, ordinary, individual use, and plan limits assume that. Keep every API token for yourself. For heavy automation, use an API key instead. |
-| ❌ **Subscription token for other people** | Don't issue API tokens to others on a subscription login, share it, or route anyone else's requests through it. Anthropic forbids routing requests through Free/Pro/Max credentials on behalf of users. |
-| ✅ **API key for your team** | With an `ANTHROPIC_API_KEY` ([Commercial Terms](https://www.anthropic.com/legal/commercial-terms)) you can serve your own authorized users, as long as usage is billed to you. |
-| ❌ **Reselling** | Never charge others for access or resell usage, whichever credential you use. |
+|                                            |                                                                                                                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ✅ **Subscription token for yourself**     | `CLAUDE_CODE_OAUTH_TOKEN` (Free/Pro/Max) is meant for the subscriber's own, ordinary, individual use, and plan limits assume that. Keep every API token for yourself. For heavy automation, use an API key instead. |
+| ❌ **Subscription token for other people** | Don't issue API tokens to others on a subscription login, share it, or route anyone else's requests through it. Anthropic forbids routing requests through Free/Pro/Max credentials on behalf of users.             |
+| ✅ **API key for your team**               | With an `ANTHROPIC_API_KEY` ([Commercial Terms](https://www.anthropic.com/legal/commercial-terms)) you can serve your own authorized users, as long as usage is billed to you.                                      |
+| ❌ **Reselling**                           | Never charge others for access or resell usage, whichever credential you use.                                                                                                                                       |
 
 All requests are also subject to the [Usage Policy](https://www.anthropic.com/legal/aup). Anthropic may enforce
 these terms without notice. If you are unsure about your case, [ask Anthropic](https://www.anthropic.com/contact-sales).
@@ -43,15 +48,15 @@ these terms without notice. If you are unsure about your case, [ask Anthropic](h
 cp .env.example .env
 ```
 
-| Variable | |
-|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` **or** `ANTHROPIC_API_KEY` | Claude credential, set exactly one. Get a subscription token from `claude setup-token`; see [Terms of use](#terms-of-use) |
-| `SECRET_KEY` | Random string that signs admin sessions |
-| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | First admin, created when no admin exists |
-| `PORT` | Host port (default `8000`) |
-| `SESSION_COOKIE_SECURE` | `true` behind HTTPS |
-| `CLAUDE_CODE_VERSION` | Claude Code version baked into the image |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Optional: send OpenTelemetry data to Alloy, e.g. `http://alloy:4318`. See [operations](docs/operations.md#observability-opentelemetry--grafana-alloy) |
+| Variable                                             |                                                                                                                                                       |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE_CODE_OAUTH_TOKEN` **or** `ANTHROPIC_API_KEY` | Claude credential, set exactly one. Get a subscription token from `claude setup-token`; see [Terms of use](#terms-of-use)                             |
+| `SECRET_KEY`                                         | Random string that signs admin sessions                                                                                                               |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD`                   | First admin, created when no admin exists                                                                                                             |
+| `PORT`                                               | Host port (default `8000`)                                                                                                                            |
+| `SESSION_COOKIE_SECURE`                              | `true` behind HTTPS                                                                                                                                   |
+| `CLAUDE_CODE_VERSION`                                | Claude Code version baked into the image                                                                                                              |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                        | Optional: send OpenTelemetry data to Alloy, e.g. `http://alloy:4318`. A ready-made stack with a dashboard is in [`grafana/`](grafana/README.md)       |
 
 ```bash
 docker compose up -d --build
@@ -70,13 +75,14 @@ print(r.choices[0].message.content)
 
 ## Documentation
 
-| | |
-|---|---|
-| `/docs` · [`docs/openapi.yaml`](docs/openapi.yaml) | API reference with examples |
-| [`docs/operations.md`](docs/operations.md) | Upgrades, backups, token rotation, troubleshooting |
-| [`docs/architecture.md`](docs/architecture.md) · [`docs/development.md`](docs/development.md) | How it works, how to change it |
-| [`docs/missing-features.md`](docs/missing-features.md) | Known limitations |
-| [`AGENTS.md`](AGENTS.md) | Guide for coding agents |
+|                                                                                               |                                                    |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `/docs` · [`docs/openapi.yaml`](docs/openapi.yaml)                                            | API reference with examples                        |
+| [`docs/operations.md`](docs/operations.md)                                                    | Upgrades, backups, token rotation, troubleshooting |
+| [`docs/architecture.md`](docs/architecture.md) · [`docs/development.md`](docs/development.md) | How it works, how to change it                     |
+| [`grafana/`](grafana/README.md)                                                               | Observability stack and Grafana dashboard          |
+| [`docs/missing-features.md`](docs/missing-features.md)                                        | Known limitations                                  |
+| [`AGENTS.md`](AGENTS.md)                                                                      | Guide for coding agents                            |
 
 ## Develop
 

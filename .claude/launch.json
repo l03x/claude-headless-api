@@ -25,6 +25,18 @@
         "--fresh"
       ],
       "port": 8020
+    },
+    {
+      "name": "api-test-mode-otel",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
+        "OTEL_METRIC_EXPORT_INTERVAL=10000",
+        "OTEL_RESOURCE_ATTRIBUTES=deployment.environment=test-mode",
+        "scripts/test_mode.sh",
+        "--fresh"
+      ],
+      "port": 8020
     }
   ]
 }

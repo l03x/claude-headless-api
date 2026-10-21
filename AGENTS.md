@@ -113,6 +113,7 @@ Container (operator's deployment; see rule 3): `docker compose up -d --build`, l
 | `scripts/export_openapi.py` | YAML → JSON for the spec |
 | `scripts/test_mode.sh` | Runs the app with the fake CLI and its own state in `.test-mode/` |
 | `loadtest/stress.js` | k6 load and stress test (creates and deletes its own user and tokens) |
+| `grafana/` | Observability stack (compose and configs) and the provisioned dashboard. Dashboard queries use the Prometheus names of the metrics in `app/telemetry.py`: rename a metric or label there, update `grafana/dashboards/` too |
 | `tests/` | pytest suite; `fake_claude.py` is the CLI stand-in |
 
 ## Conventions

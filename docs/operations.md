@@ -139,8 +139,9 @@ set; add the variables to `.env`, then run `docker compose up -d`:
 | `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` | `none` turns that signal off |
 | `OTEL_SDK_DISABLED` | `false` | `true` turns everything off |
 
-**Alloy:** [`docs/examples/alloy.config.alloy`](examples/alloy.config.alloy) receives OTLP on 4317/4318 and sends
-traces to Tempo, metrics to Prometheus (remote write) and logs to Loki. It was checked to load on Alloy v1.21.
+**Ready-made stack:** [`grafana/`](../grafana/README.md) runs Alloy, Prometheus, Loki, Tempo and Grafana with
+a provisioned dashboard. `docker compose -f docker-compose.yml -f grafana/app.compose.yml up -d` connects the
+app to it. To use your own Alloy instead, start from [`grafana/alloy/config.alloy`](../grafana/alloy/config.alloy).
 
 **Networking:** the container must reach Alloy.
 - If Alloy runs in Docker on the same host, attach both to one network (for example an external network
@@ -180,6 +181,7 @@ What is sent:
 | Port already in use on `up` | Another service holds `PORT` | Change `PORT` in `.env` |
 | Stale styles after an upgrade | Browser cache | Hard-reload (Ctrl/Cmd + Shift + R) |
 | Nothing reaches Alloy | Endpoint unset or unreachable from the container | Check the startup log for `OpenTelemetry export enabled → …`; then test the port from inside the container: `docker compose exec api python -c "import socket; socket.create_connection(('alloy', 4318), 3); print('reachable')"` |
+| App log shows `Failed to resolve 'alloy'` | The app container isn't on the `claude-observability` network (deployed without `grafana/app.compose.yml`) | Deploy with `-f docker-compose.yml -f grafana/app.compose.yml`, or set `COMPOSE_FILE=docker-compose.yml:grafana/app.compose.yml` in `.env`. Hot fix: `docker network connect claude-observability claude-headless-api` |
 
 Useful views: the dashboard **Logs** page (filter by status `error`), each log's detail page (full error
 text), and **System** (CLI version, token present, queue).
