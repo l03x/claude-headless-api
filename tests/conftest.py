@@ -29,10 +29,9 @@ from app.security import display_prefix, generate_token, hash_token  # noqa: E40
 def client(tmp_path, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     # The runner forwards only allow-listed env vars; let the fake CLI's switches through.
-    from app import claude_runner
+    from app.config import get_settings
 
-    passthrough = claude_runner._ENV_PASSTHROUGH + ("FAKE_CLAUDE_MODE", "FAKE_CLAUDE_ARGS_FILE")
-    monkeypatch.setattr(claude_runner, "_ENV_PASSTHROUGH", passthrough)
+    monkeypatch.setattr(get_settings(), "claude_env_passthrough", "FAKE_CLAUDE_MODE,FAKE_CLAUDE_ARGS_FILE")
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "claude_data_dir", str(tmp_path / "claude"))

@@ -188,3 +188,17 @@ def test_schema_upgrade_adds_new_columns(tmp_path, monkeypatch):
     cols = {c["name"] for c in inspect(app_db.get_engine()).get_columns("request_logs")}
     assert {"chat_session_id", "cost_usd"} <= cols
     assert "chat_sessions" in inspect(app_db.get_engine()).get_table_names()
+
+
+def test_relative_data_dir_still_resumes(client, make_token, tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(get_settings(), "claude_data_dir", "./relative-claude")
+    raw, _ = make_token()
+    sid = client.post("/v1/sessions", json={}, headers=H(raw)).json()["id"]
+    replies = [
+        client.post(f"/v1/sessions/{sid}/messages", json={"content": c}, headers=H(raw)).json()["choices"][0]["message"]["content"]
+        for c in ("one", "two")
+    ]
+    assert replies[1].endswith("#2: two")  # resumed, not rebuilt

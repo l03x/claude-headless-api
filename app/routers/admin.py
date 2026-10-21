@@ -30,7 +30,7 @@ from app.security import (
     require_admin,
     verify_password,
 )
-from app.sessions import create_session, delete_session, delete_user_transcripts, run_turn
+from app.sessions import create_session, delete_session, delete_user_transcripts, release_connection, run_turn
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 post = lambda path: router.post(path, dependencies=[Depends(csrf_protect)])  # noqa: E731
@@ -868,13 +868,16 @@ async def system_test(request: Request, admin: User = Depends(require_admin), db
     prompt = str(form.get("prompt") or "Reply with exactly: pong")
     started = time.monotonic()
     test = {"model": model, "effort": effort, "prompt": prompt}
+    system_prompt = runtime_settings.get(db, "default_system_prompt")
+    timeout_s = float(runtime_settings.get(db, "request_timeout_s"))
+    release_connection(db)
     try:
         result = await run_claude(
             prompt,
             model=model,
             effort=effort if effort in EFFORTS else "low",
-            system_prompt=runtime_settings.get(db, "default_system_prompt"),
-            timeout_s=float(runtime_settings.get(db, "request_timeout_s")),
+            system_prompt=system_prompt,
+            timeout_s=timeout_s,
         )
         test.update(ok=True, text=result.text, cost=result.cost_usd, usage=result.usage)
     except ClaudeError as e:

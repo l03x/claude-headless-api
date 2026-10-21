@@ -23,6 +23,15 @@ _TITLE_LEN = 80
 _locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+def release_connection(db: Session) -> None:
+    """End the open read transaction so its pooled connection is returned before a long await.
+
+    A request waiting minutes for a Claude slot must not hold one of the pool's few SQLite
+    connections: once they are all held, the next request blocks the event loop waiting for one.
+    """
+    db.commit()
+
+
 def create_session(
     db: Session,
     *,
@@ -69,6 +78,7 @@ async def run_turn(
         else:
             history = [(m.role, m.content) for m in session.messages]
             prompt = render_transcript(history, content)
+        release_connection(db)
 
         started = time.monotonic()
         result = await run_claude(

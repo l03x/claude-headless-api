@@ -87,15 +87,21 @@ class ConcurrencyGate:
 gate = ConcurrencyGate(4)
 
 
+def _data_dir() -> Path:
+    # Absolute on purpose: the CLI runs in another cwd and would resolve a relative CLAUDE_CONFIG_DIR
+    # against it, filing transcripts where transcript_paths() never looks (so sessions never resume).
+    return Path(get_settings().claude_data_dir).resolve()
+
+
 def config_dir() -> Path:
-    path = Path(get_settings().claude_data_dir) / "config"
+    path = _data_dir() / "config"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def sessions_workdir() -> Path:
     # Claude Code files transcripts under the cwd, so resumable runs all share one fixed cwd.
-    path = Path(get_settings().claude_data_dir) / "sessions"
+    path = _data_dir() / "sessions"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -151,8 +157,10 @@ def build_argv(
 
 
 def _child_env() -> dict[str, str]:
-    env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
-    token = get_settings().claude_code_oauth_token
+    settings = get_settings()
+    extra = tuple(n.strip() for n in settings.claude_env_passthrough.split(",") if n.strip())
+    env = {k: os.environ[k] for k in _ENV_PASSTHROUGH + extra if k in os.environ}
+    token = settings.claude_code_oauth_token
     if token:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")

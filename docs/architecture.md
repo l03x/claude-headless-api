@@ -123,7 +123,7 @@ models have and the table lacks (`ALTER TABLE … ADD COLUMN`). Other changes ar
 |---|---|---|
 | Source | Environment / `.env`, read once (`lru_cache`) | `app_settings` table, read per request |
 | Changed by | Editing `.env`, then recreating the container | The dashboard's Settings page |
-| Examples | `SECRET_KEY`, `DATABASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_BIN`, `CLAUDE_DATA_DIR`, `ADMIN_*`, `SESSION_COOKIE_SECURE` | enabled models, defaults, timeout, concurrency, rate limit, body logging, retention, default system prompt, budget cap |
+| Examples | `SECRET_KEY`, `DATABASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_BIN`, `CLAUDE_DATA_DIR`, `CLAUDE_ENV_PASSTHROUGH`, `ADMIN_*`, `SESSION_COOKIE_SECURE` | enabled models, defaults, timeout, concurrency, rate limit, body logging, retention, default system prompt, budget cap |
 
 ## Concurrency and limits
 
@@ -133,6 +133,10 @@ models have and the table lacks (`ALTER TABLE … ADD COLUMN`). Other changes ar
 - **Rate limiter** (`ratelimit.py`): a 60-second sliding window per token id. 0 means unlimited. The token's
   own limit wins over the global default.
 - **Timeout:** `request_timeout_s` covers the CLI run only, not time spent queued at the gate.
+- **No DB connection while waiting.** Requests end their read transaction (`release_connection()`) before
+  awaiting Claude. Otherwise queued requests would hold all of SQLAlchemy's pooled connections, and the next
+  request would block the event loop waiting for one, stalling the whole server. The k6 spike test
+  (`loadtest/stress.js`) catches this.
 - All three live in memory, which is why the app must run **one worker** (see missing-features.md for the
   Redis path).
 

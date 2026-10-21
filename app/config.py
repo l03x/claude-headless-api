@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # `sessions/` (the fixed working directory resumable sessions run in).
     claude_data_dir: str = "/data/claude"
     claude_code_oauth_token: str | None = None
+    # Extra env var names (comma-separated) forwarded to the CLI on top of the built-in allowlist,
+    # e.g. the fake CLI's FAKE_CLAUDE_* knobs in the load-test stack.
+    claude_env_passthrough: str = ""
 
 
 @lru_cache

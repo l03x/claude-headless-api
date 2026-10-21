@@ -82,3 +82,10 @@ print(r.choices[0].message.content)
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 .venv/bin/pytest -q
 ```
+
+Load test with [k6](https://k6.io) against test mode (fake Claude CLI, no tokens spent):
+
+```bash
+scripts/test_mode.sh --fresh                      # terminal 1: app on :8020
+k6 run -e PROFILE=stress loadtest/stress.js       # terminal 2: smoke | load | stress | spike | soak
+```

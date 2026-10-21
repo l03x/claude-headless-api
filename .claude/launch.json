@@ -10,9 +10,21 @@
         "ADMIN_PASSWORD=dev-password",
         "DATABASE_URL=sqlite:///./dev.db",
         "CLAUDE_DATA_DIR=./.dev-claude",
-        ".venv/bin/uvicorn", "app.main:app", "--reload", "--port", "8010"
+        ".venv/bin/uvicorn",
+        "app.main:app",
+        "--reload",
+        "--port",
+        "8010"
       ],
       "port": 8010
+    },
+    {
+      "name": "api-test-mode",
+      "runtimeExecutable": "scripts/test_mode.sh",
+      "runtimeArgs": [
+        "--fresh"
+      ],
+      "port": 8020
     }
   ]
 }

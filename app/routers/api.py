@@ -27,7 +27,7 @@ from app.ratelimit import limiter
 from app.request_logs import record_result
 from app.runtime_settings import EFFORTS, effort_rank
 from app.security import APIError, authenticate, display_prefix, extract_token
-from app.sessions import create_session, delete_session, run_turn, session_json
+from app.sessions import create_session, delete_session, release_connection, run_turn, session_json
 
 router = APIRouter()
 
@@ -217,6 +217,7 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
             json_schema = spec.get("schema", spec)
 
         gate.resize(int(settings["max_concurrency"]))
+        release_connection(db)
         result = await run_claude(
             prompt,
             model=model,

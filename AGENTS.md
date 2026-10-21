@@ -63,6 +63,15 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 .venv/bin/python scripts/export_openapi.py --check    # exit 1 if the JSON is stale
 ```
 
+Load testing (never against real Claude; the script aborts if the target isn't in test mode):
+
+```bash
+scripts/test_mode.sh --fresh                   # app on :8020 with the fake CLI (or launch.json "api-test-mode")
+k6 run -e PROFILE=smoke loadtest/stress.js     # smoke | load | stress | spike | soak
+```
+
+Test-mode knobs: `FAKE_LATENCY_MS=800-2500`, `FAKE_ERROR_RATE=0`, `MAX_CONCURRENCY`, `PORT`.
+
 Dev server (doesn't touch `.env` or Docker): the `api-dev` entry in `.claude/launch.json`, or
 
 ```bash
@@ -98,6 +107,8 @@ Container (operator's deployment; see rule 3): `docker compose up -d --build`, l
 | `app/static/` | `app.css` (design tokens, light/dark), `app.js` (confirm, copy, theme), `chat.js`, `docs.js` |
 | `docs/` | OpenAPI spec (YAML is the source, JSON generated) and the guides listed above |
 | `scripts/export_openapi.py` | YAML → JSON for the spec |
+| `scripts/test_mode.sh` | Runs the app with the fake CLI and its own state in `.test-mode/` |
+| `loadtest/stress.js` | k6 load and stress test (creates and deletes its own user and tokens) |
 | `tests/` | pytest suite; `fake_claude.py` is the CLI stand-in |
 
 ## Conventions

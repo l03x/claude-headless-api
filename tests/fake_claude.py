@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Stand-in for the `claude` CLI. Echoes what it was given in CLI-shaped JSON.
 
-Behaviour switches (env): FAKE_CLAUDE_MODE = ok | error | crash | sleep, FAKE_CLAUDE_ARGS_FILE.
+Behaviour switches (env): FAKE_CLAUDE_MODE = ok | error | crash | sleep, FAKE_CLAUDE_ARGS_FILE,
+FAKE_CLAUDE_LATENCY_MS = "<ms>" or "<min>-<max>" (simulated thinking time, used by the load tests),
+FAKE_CLAUDE_ERROR_RATE = 0..1 (fraction of runs that fail like an upstream error).
 """
 
 import json
 import os
+import random
 import sys
 import time
 
@@ -27,6 +30,13 @@ if os.environ.get("FAKE_CLAUDE_ARGS_FILE"):
         json.dump({"argv": sys.argv[1:], "stdin": prompt, "cwd": os.getcwd(), "env": sorted(os.environ)}, f)
 
 mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
+
+latency = os.environ.get("FAKE_CLAUDE_LATENCY_MS")
+if latency:
+    low, _, high = latency.partition("-")
+    time.sleep(random.uniform(float(low), float(high or low)) / 1000)
+if random.random() < float(os.environ.get("FAKE_CLAUDE_ERROR_RATE") or 0):
+    mode = "error"
 
 # Session emulation: transcripts live where the real CLI keeps them.
 session_id = flag("--session-id") or flag("--resume") or "11111111-2222-3333-4444-555555555555"
