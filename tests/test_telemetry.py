@@ -160,3 +160,27 @@ def test_no_prompt_or_reply_content_in_telemetry(otel, make_token, monkeypatch):
     dumped.append(reader.get_metrics_data().to_json())
     leaks = [d[:200] for d in dumped if SECRET in d]
     assert not leaks, leaks
+
+
+def test_streamed_run_telemetry(otel, make_token):
+    c, spans, reader, logs = otel
+    raw, _ = make_token()
+    body = {"model": "haiku", "stream": True, "messages": [{"role": "user", "content": SECRET}]}
+    r = c.post("/v1/chat/completions", json=body, headers=H(raw))
+    assert r.status_code == 200 and "[DONE]" in r.text
+    by_name = {s.name: s for s in finished(spans)}
+    chat = by_name["chat haiku"]
+    assert chat.attributes["claude.outcome"] == "ok" and chat.attributes["claude.session_mode"] == "stateless"
+    for child in ("claude.queue_wait", "claude.process"):
+        assert by_name[child].parent.span_id == chat.context.span_id
+    assert chat.parent is not None and chat.context.trace_id == by_name["POST /v1/chat/completions"].context.trace_id
+    (ttft,) = metric_points(reader, "claude.time_to_first_token")
+    assert ttft.count == 1 and tuple(ttft.explicit_bounds) == telemetry.TTFT_BUCKETS_S
+    telemetry.force_flush()
+    record = next(e.log_record for e in logs.get_finished_logs()
+                  if e.log_record.attributes and e.log_record.attributes.get("endpoint") == "chat.completions")  # fmt: skip
+    assert record.attributes["stream"] is True and record.attributes["output_tokens"] == 5
+    # Streamed text never leaks into telemetry either.
+    dumped = [s.to_json() for s in finished(spans)] + [reader.get_metrics_data().to_json()]
+    dumped += [str(e.log_record.body) + json.dumps(dict(e.log_record.attributes or {}), default=str) for e in logs.get_finished_logs()]
+    assert not [d for d in dumped if SECRET in d]

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Stand-in for the `claude` CLI. Echoes what it was given in CLI-shaped JSON.
 
-Behaviour switches (env): FAKE_CLAUDE_MODE = ok | error | crash | sleep, FAKE_CLAUDE_ARGS_FILE,
+Behaviour switches (env): FAKE_CLAUDE_MODE = ok | error | crash | sleep | fail_midway, FAKE_CLAUDE_ARGS_FILE,
 FAKE_CLAUDE_LATENCY_MS = "<ms>" or "<min>-<max>" (simulated thinking time, used by the load tests),
-FAKE_CLAUDE_ERROR_RATE = 0..1 (fraction of runs that fail like an upstream error).
+FAKE_CLAUDE_ERROR_RATE = 0..1 (fraction of runs that fail like an upstream error),
+FAKE_CLAUDE_DELTA_DELAY_MS = pause between streamed text deltas.
+
+With `--output-format stream-json` it prints stream-json lines like the real CLI: it requires --verbose,
+and with --include-partial-messages emits `stream_event` deltas (a thinking block, then the text in pieces).
 """
 
 import json
@@ -23,6 +27,11 @@ def flag(name):
 if "--version" in sys.argv:
     print("9.9.9 (Fake Claude)")
     sys.exit(0)
+
+stream = flag("--output-format") == "stream-json"
+if stream and "--verbose" not in sys.argv:
+    print("Error: When using --print, --output-format=stream-json requires --verbose", file=sys.stderr)
+    sys.exit(1)
 
 prompt = sys.stdin.read()
 if os.environ.get("FAKE_CLAUDE_ARGS_FILE"):
@@ -69,5 +78,43 @@ result = {
     "stop_reason": "end_turn",
     "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 3},
 }
-print(json.dumps(result))
+if flag("--json-schema") is not None and mode != "error":
+    result["structured_output"] = {"echo": prompt}
+
+if not stream:
+    print(json.dumps(result))
+    sys.exit(1 if mode == "error" else 0)
+
+
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def event(e):
+    emit({"type": "stream_event", "event": e, "session_id": session_id, "parent_tool_use_id": None, "uuid": "fake"})
+
+
+text = result["result"]
+emit({"type": "system", "subtype": "init", "session_id": session_id, "model": flag("--model")})
+if mode != "error" and "--include-partial-messages" in sys.argv:
+    delay = float(os.environ.get("FAKE_CLAUDE_DELTA_DELAY_MS") or 0) / 1000
+    event({"type": "message_start", "message": {"id": "msg_fake", "role": "assistant", "content": []}})
+    event({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})
+    event({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "SECRET-THOUGHT"}})
+    event({"type": "content_block_stop", "index": 0})
+    event({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}})
+    pieces = [text[i : i + 8] for i in range(0, len(text), 8)]
+    for i, piece in enumerate(pieces):
+        event({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": piece}})
+        if mode == "fail_midway" and i == 1:
+            print("connection reset by peer", file=sys.stderr)
+            sys.exit(1)
+        if delay:
+            time.sleep(delay)
+    event({"type": "content_block_stop", "index": 1})
+    event({"type": "message_delta", "delta": {"stop_reason": "end_turn"}})
+    event({"type": "message_stop"})
+emit({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+      "session_id": session_id, "parent_tool_use_id": None})
+emit(result)
 sys.exit(1 if mode == "error" else 0)

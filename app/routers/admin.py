@@ -1,12 +1,14 @@
 import csv
-import os
 import io
+import json
 import math
+import os
 import time
 from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -14,11 +16,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import runtime_settings, telemetry
-from app.claude_runner import ClaudeError, claude_version, gate, run_claude
+from app.claude_runner import ClaudeError, ClaudeResult, claude_version, gate, run_claude
 from app.config import get_settings
-from app.db import get_db
+from app.db import get_db, session_factory
 from app.models import ApiToken, ChatSession, RequestLog, User, utcnow
-from app.request_logs import record_result
+from app.request_logs import record_result, save_log
 from app.runtime_settings import EFFORTS
 from app.security import (
     csrf_protect,
@@ -30,7 +32,14 @@ from app.security import (
     require_admin,
     verify_password,
 )
-from app.sessions import create_session, delete_session, delete_user_transcripts, release_connection, run_turn
+from app.sessions import (
+    create_session,
+    delete_session,
+    delete_user_transcripts,
+    release_connection,
+    run_turn,
+    stream_turn,
+)
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 post = lambda path: router.post(path, dependencies=[Depends(csrf_protect)])  # noqa: E731
@@ -735,6 +744,9 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
         chat_session_id=session.id, client_ip=request.client.host if request.client else None,
         status="error", http_status=500, trace_id=telemetry.current_trace_id(),
     )  # fmt: skip
+    if form.get("stream") == "1":
+        return await _chat_stream(db, session, content, model=model, effort=effort, settings=settings, log=log,
+                                  started=started)  # fmt: skip
     try:
         gate.resize(int(settings["max_concurrency"]))
         result = await run_turn(db, session, content, model=model, effort=effort, settings=settings)
@@ -763,6 +775,75 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
         db.add(log)
         db.commit()
         telemetry.record_request(log, code=None if log.status == "ok" else "upstream_error")
+
+
+def _chat_event(obj: dict) -> bytes:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode()
+
+
+async def _chat_stream(db: Session, session: ChatSession, content: str, *, model: str, effort: str, settings: dict,
+                       log: RequestLog, started: float):  # fmt: skip
+    """The dashboard chat's streamed turn: `data: {"delta": …}` events, then `{"done": …}` or `{"error": …}`."""
+    log.stream = True
+    gate.resize(int(settings["max_concurrency"]))
+    sdb = session_factory()  # the stream outlives this request's DB session
+    owned = sdb.get(ChatSession, session.id)
+    release_connection(db)
+    events = stream_turn(sdb, owned, content, model=model, effort=effort, settings=settings)
+
+    def discard_if_empty() -> bool:
+        if owned.message_count == 0:  # a conversation whose first turn failed has nothing worth keeping
+            delete_session(sdb, owned)
+            log.chat_session_id = None
+            return True
+        return False
+
+    try:
+        first = await events.__anext__()  # errors before any text still get a JSON response
+    except ClaudeError as e:
+        with anyio.CancelScope(shield=True):
+            await events.aclose()
+        log.status, log.http_status, log.error = "error", e.status, e.message
+        discarded = discard_if_empty()
+        sdb.close()
+        save_log(log, started, "upstream_error")
+        return JSONResponse({"error": e.message, "discarded": discarded}, status_code=e.status)
+
+    async def body():
+        finished, code = False, None
+        try:
+            item = first
+            while not isinstance(item, ClaudeResult):
+                yield _chat_event({"delta": item})
+                item = await events.__anext__()
+            record_result(log, item, settings, prompt=content)
+            meta = {
+                "model": model,
+                "effort": effort,
+                "input_tokens": item.usage.get("input_tokens"),
+                "output_tokens": item.usage.get("output_tokens"),
+                "cost_usd": item.cost_usd,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            }
+            yield _chat_event({"done": True, "title": owned.title, "meta": meta})
+            finished = True
+        except ClaudeError as e:
+            code = "upstream_error"
+            log.status, log.http_status, log.error = "error", e.status, e.message
+            yield _chat_event({"error": e.message, "discarded": discard_if_empty()})
+            finished = True
+        finally:
+            with anyio.CancelScope(shield=True):
+                await events.aclose()
+            if not finished:  # the browser went away part way: the run was stopped
+                log.status, log.http_status, code = "error", 499, "client_disconnected"
+                log.error = "Client disconnected before the reply finished."
+                discard_if_empty()
+            sdb.close()
+            save_log(log, started, code)
+
+    return StreamingResponse(body(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})  # fmt: skip
 
 
 @post("/chat/{session_id}/rename")

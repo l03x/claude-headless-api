@@ -1,33 +1,37 @@
 import json
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app import runtime_settings, telemetry
-from app.claude_runner import ClaudeError, gate, run_claude
-from app.db import get_db
+from app.claude_runner import ClaudeError, ClaudeResult, gate, run_claude, stream_claude
+from app.db import get_db, session_factory
 from app.models import ApiToken, ChatSession, RequestLog
 from app.openai_schemas import (
     ChatCompletionRequest,
     ContentPart,
     ConversionError,
     Effort,
+    StreamOptions,
+    completion_chunk,
     completion_response,
     text_of,
     to_prompt,
 )
 from app.ratelimit import limiter
-from app.request_logs import record_result
+from app.request_logs import record_result, save_log
 from app.runtime_settings import EFFORTS, effort_rank
 from app.security import APIError, authenticate, display_prefix, extract_token
-from app.sessions import create_session, delete_session, release_connection, run_turn, session_json
+from app.sessions import create_session, delete_session, release_connection, run_turn, session_json, stream_turn
 
 router = APIRouter()
 
@@ -50,6 +54,8 @@ class SessionMessage(BaseModel):
     model: str | None = None
     effort: Effort | None = None
     reasoning_effort: str | None = None
+    stream: bool = False
+    stream_options: StreamOptions | None = None
 
 
 # --- shared helpers ----------------------------------------------------------
@@ -117,7 +123,32 @@ def _own_session(db: Session, token: ApiToken, session_id: str) -> ChatSession:
     return session
 
 
-Handler = Callable[[ApiToken, dict, RequestLog], Awaitable[dict]]
+@dataclass
+class SSEStream:
+    """A streamed reply, already primed: `_logged` sends it as server-sent events and logs when it ends."""
+
+    body: AsyncIterator[bytes]
+    code: str | None = None  # error code for the log, set by the body if it fails part way
+
+
+Handler = Callable[[ApiToken, dict, RequestLog], Awaitable["dict | SSEStream"]]
+
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}  # no proxy buffering
+
+
+async def _send_stream(stream: SSEStream, log: RequestLog, started: float) -> AsyncIterator[bytes]:
+    finished = False
+    try:
+        async for part in stream.body:
+            yield part
+        finished = True
+    finally:
+        if not finished:  # the client went away before the end: the body's cleanup stops Claude
+            log.status, log.http_status = "error", 499
+            log.error, stream.code = "Client disconnected before the reply finished.", "client_disconnected"
+        with anyio.CancelScope(shield=True):
+            await stream.body.aclose()
+        save_log(log, started, stream.code)
 
 
 async def _logged(request: Request, db: Session, endpoint: str, handler: Handler, status_code: int = 200):
@@ -134,10 +165,17 @@ async def _logged(request: Request, db: Session, endpoint: str, handler: Handler
     settings = runtime_settings.get_all(db)
     log.trace_id = telemetry.current_trace_id()
     code = None
+    streaming = False
     try:
         token = authenticate(db, raw_token)
         log.user_id, log.token_id, log.username = token.user_id, token.id, token.user.username
-        return JSONResponse(await handler(token, settings, log), status_code=status_code)
+        out = await handler(token, settings, log)
+        if isinstance(out, SSEStream):
+            streaming = True
+            return StreamingResponse(
+                _send_stream(out, log, started), media_type="text/event-stream", headers=_SSE_HEADERS
+            )
+        return JSONResponse(out, status_code=status_code)
     except APIError as e:
         log.status = "rejected" if e.status < 500 else "error"
         log.http_status, log.error, code = e.status, e.message, e.code
@@ -148,10 +186,69 @@ async def _logged(request: Request, db: Session, endpoint: str, handler: Handler
         err = APIError(e.status, e.message, "server_error", code)
         return JSONResponse(err.body(), status_code=e.status)
     finally:
-        log.latency_ms = int((time.monotonic() - started) * 1000)
-        db.add(log)
-        db.commit()
-        telemetry.record_request(log, code=code)
+        if not streaming:
+            save_log(log, started, code, db)
+
+
+def _sse(obj: dict) -> bytes:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode()
+
+
+async def _stream_reply(
+    events: AsyncIterator["str | ClaudeResult"], *, log: RequestLog, settings: dict, model: str,
+    include_usage: bool, prompt_for_log: str | None, session_id: str | None = None, on_close=None,
+) -> SSEStream:  # fmt: skip
+    """Prime `events` (deltas, then a ClaudeResult) and wrap it as an OpenAI chunk stream.
+
+    Priming runs up to the first text, so anything that fails before output (bad credentials, an unknown
+    model, a full queue's timeout) still becomes a normal JSON error with its status code. `on_close(ok)`
+    runs when the stream ends, however it ends.
+    """
+    log.stream = True
+    try:
+        first = await events.__anext__()
+    except BaseException:
+        with anyio.CancelScope(shield=True):
+            await events.aclose()
+        if on_close:
+            on_close(False)
+        raise
+    completion_id, created = f"chatcmpl-{uuid.uuid4().hex}", int(time.time())
+    stream = SSEStream(body=None)  # type: ignore[arg-type]
+
+    def chunk(**fields) -> bytes:
+        body = completion_chunk(completion_id=completion_id, created=created, model=model, **fields)
+        if session_id:
+            body["session_id"] = session_id
+        return _sse(body)
+
+    async def body() -> AsyncIterator[bytes]:
+        ok = False
+        try:
+            yield chunk(delta={"role": "assistant", "content": ""})
+            item = first
+            while not isinstance(item, ClaudeResult):
+                yield chunk(delta={"content": item})
+                item = await events.__anext__()
+            record_result(log, item, settings, prompt=prompt_for_log)
+            ok = True
+            yield chunk(delta={}, finish_reason="stop")
+            if include_usage:
+                yield chunk(usage=item.usage)
+            yield b"data: [DONE]\n\n"
+        except ClaudeError as e:
+            # Headers are sent: report the failure in-band, the way OpenAI does (SDKs raise on it).
+            stream.code = "upstream_error" if e.status != 504 else "timeout"
+            log.status, log.http_status, log.error = "error", e.status, e.message
+            yield _sse(APIError(e.status, e.message, "server_error", stream.code).body())
+        finally:
+            with anyio.CancelScope(shield=True):
+                await events.aclose()
+            if on_close:
+                on_close(ok)
+
+    stream.body = body()
+    return stream
 
 
 def _authed(db: Session, request: Request) -> ApiToken:
@@ -160,10 +257,28 @@ def _authed(db: Session, request: Request) -> ApiToken:
 
 async def _session_turn(
     db: Session, token: ApiToken, settings: dict, log: RequestLog, session: ChatSession, content: str,
-    model: str, effort: str,
-) -> dict:  # fmt: skip
+    model: str, effort: str, stream: StreamOptions | None = None, discard_on_failure: bool = False,
+) -> "dict | SSEStream":  # fmt: skip
+    """Run one session turn. `stream` (the client's stream options) switches to a streamed reply."""
     log.chat_session_id = session.id
     gate.resize(int(settings["max_concurrency"]))
+    if stream is not None:
+        # The stream outlives this request's DB session, so the turn gets its own.
+        sdb = session_factory()
+        owned = sdb.get(ChatSession, session.id)
+        release_connection(db)
+
+        def on_close(ok: bool) -> None:
+            if not ok and discard_on_failure:
+                delete_session(sdb, owned)  # a new conversation whose first turn failed
+                log.chat_session_id = None
+            sdb.close()
+
+        return await _stream_reply(
+            stream_turn(sdb, owned, content, model=model, effort=effort, settings=settings), log=log,
+            settings=settings, model=model, include_usage=stream.include_usage, prompt_for_log=content,
+            session_id=session.id, on_close=on_close,
+        )  # fmt: skip
     result = await run_turn(db, session, content, model=model, effort=effort, settings=settings)
     record_result(log, result, settings, prompt=content)
     body = completion_response(
@@ -188,8 +303,7 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
         effort = _resolve_effort(req.effort, raw.get("reasoning_effort"), settings["default_effort"])
         log.model, log.effort = model, effort
 
-        if req.stream:
-            raise APIError(400, "Streaming is not supported by this server; send stream=false.", code="stream_unsupported")
+        stream = (req.stream_options or StreamOptions()) if req.stream else None
         _check_access(token, settings, model, effort)
         _check_rate_limit(token, settings)
 
@@ -203,10 +317,14 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
             content = text_of(req.messages[-1].content)
             if req.session_id != "new":
                 session = _own_session(db, token, req.session_id)
-                return await _session_turn(db, token, settings, log, session, content, model, effort)
+                return await _session_turn(db, token, settings, log, session, content, model, effort, stream)
             session = create_session(
                 db, user=token.user, model=model, effort=effort, system_prompt=system, token_id=token.id
             )
+            if stream is not None:  # the stream deletes the session itself if its first turn fails
+                return await _session_turn(
+                    db, token, settings, log, session, content, model, effort, stream, discard_on_failure=True
+                )
             try:
                 return await _session_turn(db, token, settings, log, session, content, model, effort)
             except ClaudeError:
@@ -222,16 +340,22 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
 
         gate.resize(int(settings["max_concurrency"]))
         release_connection(db)
-        result = await run_claude(
-            prompt,
-            model=model,
-            effort=effort,
-            system_prompt=system,
-            timeout_s=float(settings["request_timeout_s"]),
-            json_schema=json_schema,
-            max_budget_usd=settings["max_budget_usd_per_request"],
-        )
-        record_result(log, result, settings, prompt=f"[system]\n{system}\n\n[prompt]\n{prompt}")
+        run_args = {
+            "model": model,
+            "effort": effort,
+            "system_prompt": system,
+            "timeout_s": float(settings["request_timeout_s"]),
+            "json_schema": json_schema,
+            "max_budget_usd": settings["max_budget_usd_per_request"],
+        }
+        logged_prompt = f"[system]\n{system}\n\n[prompt]\n{prompt}"
+        if stream is not None:
+            return await _stream_reply(
+                stream_claude(prompt, **run_args), log=log, settings=settings, model=model,
+                include_usage=stream.include_usage, prompt_for_log=logged_prompt,
+            )  # fmt: skip
+        result = await run_claude(prompt, **run_args)
+        record_result(log, result, settings, prompt=logged_prompt)
         return completion_response(
             completion_id=f"chatcmpl-{result.session_id or uuid.uuid4().hex}",
             created=int(time.time()),
@@ -314,7 +438,8 @@ async def sessions_message(session_id: str, request: Request, db: Session = Depe
             raise APIError(400, str(e)) from None
         if not content.strip():
             raise APIError(400, "Message content is empty.")
-        return await _session_turn(db, token, settings, log, session, content, model, effort)
+        stream = (req.stream_options or StreamOptions()) if req.stream else None
+        return await _session_turn(db, token, settings, log, session, content, model, effort, stream)
 
     return await _logged(request, db, "sessions.messages", handle)
 

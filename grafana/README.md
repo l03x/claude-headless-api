@@ -4,25 +4,19 @@ Grafana Alloy → Prometheus (metrics), Loki (logs), Tempo (traces) → Grafana,
 and a **Claude Headless API** dashboard provisioned.
 
 ```bash
+docker network create claude-observability   # once; the app and this stack both join it
 cd grafana
 cp .env.example .env        # set GRAFANA_ADMIN_PASSWORD
 docker compose up -d        # Grafana on http://localhost:3001
 ```
 
-Then connect the app, from the repository root (this recreates the `api` container; `.env` and data are kept):
-
-```bash
-docker compose -f docker-compose.yml -f grafana/app.compose.yml up -d
-```
-
-Use that same command for every later deploy, or add `COMPOSE_FILE=docker-compose.yml:grafana/app.compose.yml`
-to the app's `.env` so plain `docker compose up -d --build` includes it. Without it, the app leaves the
-network and its log fills with `Failed to resolve 'alloy'`.
+The app's `docker-compose.yml` always joins the same network, so its normal deploy (`docker compose up -d
+--build`) keeps it connected. Turn export on by adding `OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318` to the
+app's `.env`. The network is external, so `docker compose down` in either folder never deletes it.
 
 | Path | |
 |---|---|
 | `docker-compose.yml` | The stack. Only Grafana (`127.0.0.1:3001`) and Alloy (OTLP `4317`/`4318`, UI `12345`) are published |
-| `app.compose.yml` | Joins the app to the `claude-observability` network and sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318` |
 | `alloy/config.alloy` | OTLP receiver → Tempo, Prometheus (remote write), Loki (OTLP) |
 | `prometheus/`, `loki/`, `tempo/` | Single-node configs. Retention: 15 days of metrics and logs, 7 days of traces. Tempo also generates span metrics and the service graph |
 | `provisioning/` | Grafana data sources (linked: metric exemplars → traces, logs ↔ traces) and dashboard loading |

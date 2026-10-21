@@ -183,6 +183,27 @@ function chat(token) {
 let sessionId = null;
 let turns = 0;
 
+// A streamed chat completion. k6 reads the whole event stream; the check is that it is complete.
+function streamedChat(token) {
+  const body = JSON.stringify({
+    model: MODEL,
+    effort: "low",
+    stream: true,
+    messages: [{ role: "user", content: `Streamed load test message ${exec.scenario.iterationInTest}` }],
+  });
+  const res = http.post(`${BASE}/v1/chat/completions`, body, {
+    headers: headers(token),
+    tags: { name: "chat_stream" },
+    timeout: TIMEOUT,
+  });
+  record(res, "chat");
+  check(res, {
+    "stream: 200": (r) => r.status === 200,
+    "stream: event stream": (r) => String(r.headers["Content-Type"] || "").startsWith("text/event-stream"),
+    "stream: complete": (r) => typeof r.body === "string" && r.body.trimEnd().endsWith("data: [DONE]"),
+  });
+}
+
 function sessionTurn(token) {
   if (!sessionId) {
     const res = http.post(`${BASE}/v1/sessions`, JSON.stringify({ model: MODEL, effort: "low" }), {
@@ -222,7 +243,8 @@ function models(token) {
 export default function (data) {
   const token = data.tokens[(exec.vu.idInTest - 1) % data.tokens.length];
   const roll = Math.random();
-  if (roll < 0.6) chat(token);
+  if (roll < 0.45) chat(token);
+  else if (roll < 0.6) streamedChat(token);
   else if (roll < 0.9) sessionTurn(token);
   else models(token);
   sleep(Math.random() * THINK);

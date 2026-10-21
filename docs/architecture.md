@@ -57,8 +57,8 @@ Everything durable lives in one Docker volume mounted at `/data`:
    missing, unknown, revoked, expired or its user is disabled. It also updates `last_used_at`.
 3. **`_parse()`** validates the body with `ChatCompletionRequest`. Unknown OpenAI fields are allowed and
    ignored; `reasoning_effort` is validated separately so that `none`/`minimal` can map to `low`.
-4. **Checks.** `stream` must be false; `_check_access()` covers enabled model, token allow-list and effort
-   cap; `_check_rate_limit()` applies the per-token requests/minute limit.
+4. **Checks.** `_check_access()` covers enabled model, token allow-list and effort cap;
+   `_check_rate_limit()` applies the per-token requests/minute limit.
 5. **`to_prompt()`** (`openai_schemas.py`):
    - `system`/`developer` messages become the system prompt, falling back to the `default_system_prompt`
      setting. A system prompt is always passed, which replaces Claude Code's agentic default.
@@ -85,6 +85,7 @@ claude -p --output-format json --model <m> --effort <e> --tools "" --system-prom
 | `--system-prompt` | Replaces the coding-agent system prompt with the caller's (or the default) |
 | `--setting-sources ""`, `--strict-mcp-config`, `--disable-slash-commands` | Ignore any settings, MCP servers or skills found on disk |
 | `--no-session-persistence` | Stateless calls leave nothing on disk |
+| `--output-format stream-json --verbose --include-partial-messages` | Streamed replies only. The CLI requires `--verbose` with stream-json in print mode; partial messages add the token-level deltas |
 | `--session-id` / `--resume` | Sessions (see below) |
 | *not* `--bare` | `--bare` ignores OAuth, which would break `CLAUDE_CODE_OAUTH_TOKEN` |
 
@@ -96,6 +97,34 @@ Process hygiene in `run_claude()`:
   never reach it.
 - It runs in its own process group. On timeout the whole group is killed and the API returns `504`.
 - A non-zero exit or `is_error: true` becomes a `ClaudeError` (`502`) carrying the CLI's message.
+
+### Streaming
+
+`stream: true` (chat completions, session messages, and the dashboard chat with `stream=1`) uses
+`stream_claude()` instead of `run_claude()`:
+
+- **Reading the CLI.** It reads the CLI's stdout line by line and yields only `text_delta`s, never thinking
+  deltas, then one `ClaudeResult` built from the final `result` line.
+  - With `json_schema`, deltas are skipped and the finished `structured_output` is sent as one piece.
+  - If no deltas arrive, the `result` text is sent as one piece.
+  - The stdout reader's line limit is 16 MiB, because the `result` line holds the whole reply.
+  - stderr is drained alongside so the pipe can't fill, and one deadline covers the whole run.
+- **Priming.** Before responding, the handler pulls the first item. Anything that fails before text exists
+  (credentials, model, timeout while queued) is still a normal JSON error with its status code. After that the
+  response is `text/event-stream` with OpenAI `chat.completion.chunk`s; a later failure is sent as one
+  `data: {"error": …}` event.
+- **Logging.** `_logged()` gets an `SSEStream` back and writes the request-log row when the stream ends,
+  through a fresh DB session, since the request's own is gone by then. Streamed session turns also get their
+  own DB session.
+- **Disconnects.** The client going away closes the generators. The CLI's process group is killed, the
+  log row gets `http_status=499`, and a session turn stores nothing. It also drops its Claude transcript,
+  which may hold half a turn, so the next turn rebuilds from the stored messages.
+- **Cancellation safety.** Starlette cancels a stream through anyio, which re-raises at every `await`
+  during cleanup. So cleanup does its synchronous work first (kill, bookkeeping), shields the `aclose()` calls,
+  and the concurrency gate releases its slot without awaiting. An awaiting release would leak a slot on every
+  disconnect.
+- **Telemetry.** Spans are started without being made current (`telemetry.start_claude_span`), because the
+  generator resumes in more than one task. `claude.time_to_first_token` records CLI start → first delta.
 
 ## Sessions
 

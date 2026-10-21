@@ -40,6 +40,7 @@ EXCLUDED_URLS = "healthz,static/,favicon.ico"
 # one bucket and make the percentiles meaningless.
 RUN_BUCKETS_S = (0.5, 1, 2, 3, 5, 7.5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600)
 QUEUE_BUCKETS_S = (0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300)
+TTFT_BUCKETS_S = (0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 7.5, 10, 15, 20, 30, 60, 120)
 
 
 @dataclass
@@ -50,6 +51,7 @@ class _Instruments:
     tokens: Any
     cost: Any
     requests: Any
+    ttft: Any
 
 
 @dataclass
@@ -84,6 +86,12 @@ def _build_instruments(meter) -> _Instruments:
         cost=meter.create_counter("claude.cost", unit="{USD}", description="Cost reported by Claude Code"),
         requests=meter.create_counter(
             "api.requests", unit="{request}", description="API and dashboard-chat requests by outcome"
+        ),
+        ttft=meter.create_histogram(
+            "claude.time_to_first_token",
+            unit="s",
+            description="Streamed runs: time from CLI start to the first text delta (excludes queueing)",
+            explicit_bucket_boundaries_advisory=TTFT_BUCKETS_S,
         ),
     )
 
@@ -279,21 +287,43 @@ def instruments() -> _Instruments:
     return _state.instruments or _NOOP
 
 
+def _claude_span_attributes(model: str, effort: str, mode: str) -> dict:
+    return {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.request.model": model,
+        "claude.effort": effort,
+        "claude.session_mode": mode,
+    }
+
+
 @contextmanager
 def claude_span(model: str, effort: str, mode: str):
     """The span around one Claude run, following the GenAI semantic conventions (no content)."""
     with _state.tracer.start_as_current_span(
-        f"chat {model}",
-        kind=SpanKind.CLIENT,
-        attributes={
-            "gen_ai.operation.name": "chat",
-            "gen_ai.provider.name": "anthropic",
-            "gen_ai.request.model": model,
-            "claude.effort": effort,
-            "claude.session_mode": mode,
-        },
+        f"chat {model}", kind=SpanKind.CLIENT, attributes=_claude_span_attributes(model, effort, mode)
     ) as span:
         yield span
+
+
+def start_claude_span(model: str, effort: str, mode: str):
+    """Like claude_span, for streamed runs: the caller ends it.
+
+    A streamed run lives in an async generator that is resumed from more than one task, so its spans
+    must not be made "current" (a context attached in one task can't be detached in another).
+    Children get the parent explicitly via child_span().
+    """
+    return _state.tracer.start_span(
+        f"chat {model}", kind=SpanKind.CLIENT, attributes=_claude_span_attributes(model, effort, mode)
+    )
+
+
+def child_span(parent, name: str):
+    return _state.tracer.start_span(name, context=trace.set_span_in_context(parent))
+
+
+def record_ttft(model: str, seconds: float) -> None:
+    instruments().ttft.record(seconds, {"gen_ai.request.model": model})
 
 
 def record_run(span, *, model: str, effort: str, mode: str, outcome: str, queue_wait_s: float,
@@ -354,6 +384,7 @@ def record_request(log, *, code: str | None) -> None:
         "cache_read_tokens": log.cache_read_tokens,
         "cache_creation_tokens": log.cache_creation_tokens,
         "cost_usd": log.cost_usd,
+        "stream": bool(log.stream),
     }
     request_logger.log(
         logging.WARNING if log.status == "error" else logging.INFO,

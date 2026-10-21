@@ -12,7 +12,6 @@ Legend: **Not supported** = rejected or ignored today · **Partial** = works wit
 
 | Feature | Status | Today | What adding it would take |
 |---|---|---|---|
-| Streaming (`stream: true`, SSE) | Not supported | Rejected with `400 stream_unsupported`; the full reply arrives at once. | Run `claude -p --output-format stream-json --include-partial-messages` and translate its events into OpenAI `chat.completion.chunk` server-sent events. The request log and session messages would be written when the stream ends. |
 | Sampling controls: `temperature`, `top_p`, `max_tokens`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`, `logit_bias` | Not supported | Accepted and silently ignored, because `claude -p` has no flags for them. | Not possible through the CLI. `max_tokens` could be approximated by asking for brevity in the system prompt, or enforced by truncating, but neither is exact. |
 | `n > 1` (several choices) | Not supported | Ignored; there is always exactly one choice. | Run the CLI `n` times in parallel and merge the results. That costs `n` times as much and uses `n` concurrency slots. |
 | `logprobs` | Not supported | Always `null`. | Not available from Claude Code. |

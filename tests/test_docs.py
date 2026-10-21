@@ -1,5 +1,6 @@
 """The OpenAPI spec in docs/ must stay valid, complete and true to what the server returns."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -115,6 +116,24 @@ def test_live_responses_match_spec(client, make_token, monkeypatch):
     check(client.get(f"/v1/sessions/{sid}", headers=H(raw)).json(), S + "SessionWithMessages")
     check(client.get("/v1/sessions", headers=H(raw)).json(), S + "SessionList")
     check(client.delete(f"/v1/sessions/{sid}", headers=H(raw)).json(), S + "SessionDeleted")
+
+    # Streamed replies: every chunk matches ChatCompletionChunk, a mid-stream failure matches Error.
+    def stream_events(path, body):
+        r = client.post(path, json={**body, "stream": True}, headers=H(raw))
+        assert r.headers["content-type"].startswith("text/event-stream")
+        data = [line[6:] for line in r.text.splitlines() if line.startswith("data: ")]
+        return [json.loads(d) for d in data if d != "[DONE]"]
+
+    chat = {"messages": [{"role": "user", "content": "hi"}], "stream_options": {"include_usage": True}}
+    for chunk in stream_events("/v1/chat/completions", chat):
+        check(chunk, S + "ChatCompletionChunk")
+    sid2 = client.post("/v1/sessions", json={}, headers=H(raw)).json()["id"]
+    for chunk in stream_events(f"/v1/sessions/{sid2}/messages", {"content": "hi"}):
+        check(chunk, S + "ChatCompletionChunk")
+        assert chunk["session_id"] == sid2
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "fail_midway")
+    check(stream_events("/v1/chat/completions", chat)[-1], S + "Error")
+    monkeypatch.delenv("FAKE_CLAUDE_MODE")
 
     errors = [
         client.get("/v1/models"),

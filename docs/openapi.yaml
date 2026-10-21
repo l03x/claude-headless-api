@@ -25,7 +25,10 @@ info:
     **Errors** use OpenAI's shape — `{"error": {"message", "type", "param", "code"}}` — see the `Error` schema
     for every `type` and `code` this server returns.
 
-    **Not supported:** streaming (`stream: true`), image or audio input, tool/function calling, `n > 1`,
+    **Streaming:** send `stream: true` to receive the reply as OpenAI-style server-sent events
+    (`chat.completion.chunk`, then `data: [DONE]`), as OpenAI SDKs expect.
+
+    **Not supported:** image or audio input, tool/function calling, `n > 1`,
     and sampling controls (`temperature`, `top_p`, `max_tokens`, `stop`, …), which are accepted and ignored.
     See `docs/missing-features.md` in the repository for the full list.
   license:
@@ -72,6 +75,17 @@ paths:
         - Set `session_id` to keep the conversation on the server instead of re-sending history: `"new"` starts a
           session and the response carries its id; an existing id continues it. With `session_id`, only the
           **last** user message is sent and `response_format` is ignored.
+
+        **Streaming.** With `stream: true` the reply arrives as server-sent events (`text/event-stream`), each a
+        `data:` line holding a `chat.completion.chunk`: first `delta: {role: "assistant"}`, then pieces of
+        `delta.content` as Claude writes them, then `finish_reason: "stop"`, and finally `data: [DONE]`. With
+        `stream_options: {include_usage: true}`, a last chunk with `usage` and empty `choices` comes before
+        `[DONE]`.
+
+        - Failures before any text (bad key, unknown model, Claude not logged in, …) still return the normal
+          JSON error with its status code.
+        - A failure after text was sent arrives as one `data: {"error": {…}}` event, with no `[DONE]`.
+        - If the client disconnects, the run is stopped; a session turn interrupted that way is not stored.
 
         Unknown OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and
         ignored, because `claude -p` has no equivalent. Each call counts towards the token's rate limit and is
@@ -132,6 +146,15 @@ paths:
                       content: You are a helpful tutor.
                     - role: user
                       content: Let's study fractions. Start with the basics.
+              streamed:
+                summary: Streamed reply, with usage at the end
+                value:
+                  model: sonnet
+                  stream: true
+                  stream_options: { include_usage: true }
+                  messages:
+                    - role: user
+                      content: Write a haiku about Rabat.
       responses:
         "200":
           description: The assistant's reply.
@@ -181,6 +204,22 @@ paths:
                       prompt_tokens_details:
                         cached_tokens: 3100
                     session_id: 0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Sent when `stream` is true. Each event is a `data:` line with a `ChatCompletionChunk` (see
+                  Schemas), ending with `data: [DONE]`; or a `data:` line with an `Error` if the run fails part way.
+              example: |
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null, "logprobs": null}]}
+
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "choices": [{"index": 0, "delta": {"content": "Waves on the Bou "}, "finish_reason": null, "logprobs": null}]}
+
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "choices": [{"index": 0, "delta": {"content": "Regreg shore"}, "finish_reason": null, "logprobs": null}]}
+
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop", "logprobs": null}]}
+
+                data: [DONE]
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -252,6 +291,56 @@ paths:
             const data = await res.json();
             if (!res.ok) throw new Error(data.error.message);
             console.log(data.choices[0].message.content);
+        - lang: bash
+          label: cURL (streaming)
+          source: |
+            # -N turns off curl's buffering so chunks print as they arrive
+            curl -N http://localhost:8000/v1/chat/completions \
+              -H "Authorization: Bearer $API_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"model": "sonnet", "stream": true, "messages": [{"role": "user", "content": "Write a haiku about Rabat."}]}'
+        - lang: python
+          label: Python (openai, streaming)
+          source: |
+            from openai import OpenAI
+
+            client = OpenAI(base_url="http://localhost:8000/v1", api_key="chk_...")
+
+            stream = client.chat.completions.create(
+                model="sonnet",
+                messages=[{"role": "user", "content": "Write a haiku about Rabat."}],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    print(chunk.choices[0].delta.content, end="", flush=True)
+                if chunk.usage:
+                    print(f"\n[{chunk.usage.completion_tokens} tokens]")
+        - lang: javascript
+          label: JavaScript (fetch, streaming)
+          source: |
+            const res = await fetch("http://localhost:8000/v1/chat/completions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${process.env.API_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ model: "sonnet", stream: true, messages: [{ role: "user", content: "Write a haiku." }] }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error.message); // failed before any text
+
+            const decoder = new TextDecoder();
+            let buffer = "";
+            for await (const bytes of res.body) {
+              buffer += decoder.decode(bytes, { stream: true });
+              let end;
+              while ((end = buffer.indexOf("\n\n")) >= 0) {
+                const data = buffer.slice(0, end).replace(/^data: /, "");
+                buffer = buffer.slice(end + 2);
+                if (data === "[DONE]") break;
+                const event = JSON.parse(data);
+                if (event.error) throw new Error(event.error.message); // failed part way
+                process.stdout.write(event.choices[0]?.delta?.content ?? "");
+              }
+            }
 
   /v1/models:
     get:
@@ -556,6 +645,10 @@ paths:
 
         Both the message and the reply are stored and can be read back with `GET /v1/sessions/{session_id}`.
         A failed turn stores nothing, so it can simply be retried. Counts towards the rate limit.
+
+        Send `stream: true` for server-sent events, exactly as on `POST /v1/chat/completions` (every chunk also
+        carries `session_id`). A streamed turn that fails or is cut off by a disconnect is not stored, and the
+        session's next turn rebuilds the conversation from the stored messages.
       requestBody:
         required: true
         content:
@@ -591,6 +684,22 @@ paths:
                   prompt_tokens_details:
                     cached_tokens: 3400
                 session_id: 0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Sent when `stream` is true. Each event is a `data:` line with a `ChatCompletionChunk` (see
+                  Schemas), ending with `data: [DONE]`; or a `data:` line with an `Error` if the run fails part way.
+              example: |
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "session_id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null, "logprobs": null}]}
+
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "session_id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11", "choices": [{"index": 0, "delta": {"content": "Waves on the Bou "}, "finish_reason": null, "logprobs": null}]}
+
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "session_id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11", "choices": [{"index": 0, "delta": {"content": "Regreg shore"}, "finish_reason": null, "logprobs": null}]}
+
+                data: {"id": "chatcmpl-9f1c", "object": "chat.completion.chunk", "created": 1792574685, "model": "sonnet", "session_id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop", "logprobs": null}]}
+
+                data: [DONE]
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -858,7 +967,9 @@ components:
         stream:
           type: boolean
           default: false
-          description: Must be `false` or omitted; streaming is not supported and `true` returns `400` (`stream_unsupported`).
+          description: "Send the reply as server-sent events (`chat.completion.chunk`s, then `data: [DONE]`)."
+        stream_options:
+          $ref: "#/components/schemas/StreamOptions"
         session_id:
           type: string
           description: |
@@ -870,6 +981,64 @@ components:
           description: Accepted for compatibility and ignored.
       additionalProperties:
         description: Other OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and ignored.
+
+    StreamOptions:
+      type: object
+      description: Options for a streamed reply (`stream` true).
+      properties:
+        include_usage:
+          type: boolean
+          default: false
+          description: "Add a final chunk with `usage` and empty `choices` before `data: [DONE]`."
+      additionalProperties: true
+
+    ChatCompletionChunk:
+      type: object
+      description: One server-sent event of a streamed reply. All chunks of a reply share `id` and `created`.
+      required: [id, object, created, model, choices]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: chat.completion.chunk
+        created:
+          type: integer
+          description: Unix time (seconds) the reply started.
+        model:
+          type: string
+        choices:
+          type: array
+          description: One choice, or none on the final usage chunk.
+          maxItems: 1
+          items:
+            type: object
+            required: [index, delta, finish_reason]
+            properties:
+              index:
+                type: integer
+                const: 0
+              delta:
+                type: object
+                description: "`role` on the first chunk, then `content` pieces; empty on the last chunk."
+                properties:
+                  role:
+                    type: string
+                    const: assistant
+                  content:
+                    type: string
+              finish_reason:
+                type: ["string", "null"]
+                enum: [stop, null]
+                description: "`null` until the last chunk, which has `stop`."
+              logprobs:
+                type: "null"
+        usage:
+          $ref: "#/components/schemas/Usage"
+        session_id:
+          type: string
+          format: uuid
+          description: Present on every chunk when the reply belongs to a session.
 
     ChatCompletion:
       type: object
@@ -1008,6 +1177,12 @@ components:
           $ref: "#/components/schemas/Effort"
         reasoning_effort:
           $ref: "#/components/schemas/ReasoningEffort"
+        stream:
+          type: boolean
+          default: false
+          description: Send the reply as server-sent events, as on chat completions.
+        stream_options:
+          $ref: "#/components/schemas/StreamOptions"
       additionalProperties: true
 
     Session:
@@ -1128,10 +1303,10 @@ components:
 
                 - `missing_api_key`, `invalid_api_key`, `api_key_revoked`, `api_key_expired` — 401
                 - `user_disabled`, `model_not_allowed`, `effort_not_allowed` — 403
-                - `model_not_found`, `stream_unsupported` — 400 (other 400s have `null`)
+                - `model_not_found` — 400 (other 400s have `null`)
                 - `session_not_found` — 404
                 - `rate_limit_exceeded` — 429
-                - `upstream_error` — 500/502, `timeout` — 504
+                - `upstream_error` — 500/502, `timeout` — 504 (also sent inside a stream that fails part way)
 
   responses:
     BadRequest:
@@ -1148,14 +1323,6 @@ components:
                   type: invalid_request_error
                   param: null
                   code: model_not_found
-            streaming:
-              summary: Streaming requested
-              value:
-                error:
-                  message: Streaming is not supported by this server; send stream=false.
-                  type: invalid_request_error
-                  param: null
-                  code: stream_unsupported
             imagePart:
               summary: Unsupported content
               value:

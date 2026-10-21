@@ -3,7 +3,7 @@
 # State lives in ./.test-mode/ (use --fresh to wipe it). The real .env is never used for credentials.
 #
 #   scripts/test_mode.sh [--fresh]
-#   PORT=8020  FAKE_LATENCY_MS=800-2500  FAKE_ERROR_RATE=0  MAX_CONCURRENCY=4   (all optional)
+#   PORT=8020  FAKE_LATENCY_MS=800-2500  FAKE_ERROR_RATE=0  FAKE_DELTA_DELAY_MS=0  MAX_CONCURRENCY=4   (all optional)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,9 +16,10 @@ export SECRET_KEY=test-mode ADMIN_USERNAME=admin ADMIN_PASSWORD=test-mode-passwo
   SESSION_COOKIE_SECURE=false CLAUDE_CODE_OAUTH_TOKEN= \
   DATABASE_URL="sqlite:///./$DIR/app.db" CLAUDE_DATA_DIR="./$DIR/claude" \
   CLAUDE_BIN="$PWD/tests/fake_claude.py" \
-  CLAUDE_ENV_PASSTHROUGH=FAKE_CLAUDE_LATENCY_MS,FAKE_CLAUDE_ERROR_RATE \
+  CLAUDE_ENV_PASSTHROUGH=FAKE_CLAUDE_LATENCY_MS,FAKE_CLAUDE_ERROR_RATE,FAKE_CLAUDE_DELTA_DELAY_MS \
   FAKE_CLAUDE_LATENCY_MS="${FAKE_LATENCY_MS:-800-2500}" \
-  FAKE_CLAUDE_ERROR_RATE="${FAKE_ERROR_RATE:-0}"
+  FAKE_CLAUDE_ERROR_RATE="${FAKE_ERROR_RATE:-0}" \
+  FAKE_CLAUDE_DELTA_DELAY_MS="${FAKE_DELTA_DELAY_MS:-0}"
 
 if [[ -n ${MAX_CONCURRENCY:-} ]]; then
   .venv/bin/python -c "

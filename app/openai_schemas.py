@@ -26,6 +26,11 @@ class ResponseFormat(BaseModel):
     json_schema: dict[str, Any] | None = None
 
 
+class StreamOptions(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    include_usage: bool = False
+
+
 class ChatCompletionRequest(BaseModel):
     # Unknown OpenAI params (temperature, top_p, max_tokens, ...) are accepted and ignored:
     # `claude -p` exposes no equivalent.
@@ -37,6 +42,7 @@ class ChatCompletionRequest(BaseModel):
     reasoning_effort: Effort | None = None
     response_format: ResponseFormat | None = None
     stream: bool = False
+    stream_options: StreamOptions | None = None
     user: str | None = None
     # Extension: continue a server-side session ("new" starts one). Only the last user message is sent.
     session_id: str | None = None
@@ -104,11 +110,21 @@ def render_transcript(history: list[tuple[str, str]], final: str) -> str:
     return "\n".join(lines)
 
 
-def completion_response(*, completion_id: str, created: int, model: str, text: str, usage: dict[str, Any]) -> dict:
+def usage_json(usage: dict[str, Any]) -> dict:
+    """Claude Code's usage in OpenAI's shape; cached input counts as prompt tokens."""
     cache_read = usage.get("cache_read_input_tokens") or 0
     cache_creation = usage.get("cache_creation_input_tokens") or 0
     prompt_tokens = (usage.get("input_tokens") or 0) + cache_read + cache_creation
     completion_tokens = usage.get("output_tokens") or 0
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "prompt_tokens_details": {"cached_tokens": cache_read},
+    }
+
+
+def completion_response(*, completion_id: str, created: int, model: str, text: str, usage: dict[str, Any]) -> dict:
     return {
         "id": completion_id,
         "object": "chat.completion",
@@ -122,10 +138,17 @@ def completion_response(*, completion_id: str, created: int, model: str, text: s
                 "logprobs": None,
             }
         ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "prompt_tokens_details": {"cached_tokens": cache_read},
-        },
+        "usage": usage_json(usage),
     }
+
+
+def completion_chunk(*, completion_id: str, created: int, model: str, delta: dict | None = None,
+                     finish_reason: str | None = None, usage: dict[str, Any] | None = None) -> dict:  # fmt: skip
+    """One `chat.completion.chunk` of a streamed reply. With `usage`, the final usage-only chunk (no choices)."""
+    chunk = {"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model}
+    if usage is not None:
+        chunk["choices"] = []
+        chunk["usage"] = usage_json(usage)
+    else:
+        chunk["choices"] = [{"index": 0, "delta": delta or {}, "finish_reason": finish_reason, "logprobs": None}]
+    return chunk

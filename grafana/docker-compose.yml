@@ -61,7 +61,10 @@ services:
 
 networks:
   default:
-    name: claude-observability   # fixed name, so the app can join it (see app.compose.yml)
+    # Shared with the app (../docker-compose.yml). External, so `docker compose down` here doesn't delete it
+    # and cut the app off. Create it once:  docker network create claude-observability
+    name: claude-observability
+    external: true
 
 volumes:
   alloy-data:

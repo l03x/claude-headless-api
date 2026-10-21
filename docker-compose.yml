@@ -11,7 +11,15 @@ services:
       - "${PORT:-8000}:8000"
     volumes:
       - claude-api-data:/data
+    networks: [default, observability]
     restart: unless-stopped
 
 volumes:
   claude-api-data:
+
+networks:
+  # Shared with the observability stack in grafana/, so the app always reaches Alloy (OTEL_EXPORTER_OTLP_ENDPOINT=
+  # http://alloy:4318). External, so neither stack deletes it. Create it once:  docker network create claude-observability
+  observability:
+    name: claude-observability
+    external: true

@@ -158,7 +158,10 @@ The fake CLI (`tests/fake_claude.py`):
 
 - Echoes `echo[<model>|<effort>]<#turn>: <prompt>`.
 - Emulates Claude Code session files under `CLAUDE_CONFIG_DIR/projects/<cwd>/`.
-- Switches: `FAKE_CLAUDE_MODE=ok|error|crash|sleep` and `FAKE_CLAUDE_ARGS_FILE=<path>`, which dumps the argv,
+- Speaks `--output-format stream-json` like the real CLI (requires `--verbose`; with
+  `--include-partial-messages` it streams a thinking block, then the text in pieces).
+- Switches: `FAKE_CLAUDE_MODE=ok|error|crash|sleep|fail_midway`, `FAKE_CLAUDE_DELTA_DELAY_MS=<ms>` (pause between
+  streamed pieces) and `FAKE_CLAUDE_ARGS_FILE=<path>`, which dumps the argv,
   stdin, cwd and env names it received. Use it to assert on flags.
 
 The runner forwards only allow-listed env vars to the CLI; conftest adds the `FAKE_CLAUDE_*` switches to that

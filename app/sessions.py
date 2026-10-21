@@ -9,11 +9,13 @@ import asyncio
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncIterator
+from contextlib import aclosing
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.claude_runner import ClaudeResult, delete_transcript, run_claude, transcript_paths
+from app.claude_runner import ClaudeResult, delete_transcript, run_claude, stream_claude, transcript_paths
 from app.models import ChatMessage, ChatSession, User, utcnow
 from app.openai_schemas import render_transcript
 
@@ -57,6 +59,66 @@ def create_session(
     return session
 
 
+def _prepare_turn(db: Session, session: ChatSession, content: str) -> tuple[str, str | None, str | None]:
+    """With the session's lock held: (prompt, new Claude session id or None, id to resume or None)."""
+    db.refresh(session)
+    resume = session.claude_session_id
+    if resume and not transcript_paths(resume):
+        resume = None  # transcript lost (volume reset, manual cleanup): rebuild from our copy
+    new_id = None if resume else str(uuid.uuid4())
+    if resume:
+        prompt = content
+    else:
+        history = [(m.role, m.content) for m in session.messages]
+        prompt = render_transcript(history, content)
+    release_connection(db)
+    return prompt, new_id, resume
+
+
+def _run_args(session: ChatSession, settings: dict, model: str, effort: str, new_id, resume) -> dict:
+    return {
+        "model": model,
+        "effort": effort,
+        "system_prompt": session.system_prompt or settings["default_system_prompt"],
+        "timeout_s": float(settings["request_timeout_s"]),
+        "max_budget_usd": settings["max_budget_usd_per_request"],
+        "session_id": new_id,
+        "resume": resume,
+    }
+
+
+def _store_turn(db: Session, session: ChatSession, content: str, result: ClaudeResult, *, model: str, effort: str,
+                new_id: str | None, resume: str | None, latency_ms: int) -> None:  # fmt: skip
+    now = utcnow()
+    usage = result.usage
+    tin, tout = usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
+    session.claude_session_id = result.session_id or new_id or resume
+    db.add(ChatMessage(session_id=session.id, role="user", content=content, created_at=now))
+    db.add(
+        ChatMessage(
+            session_id=session.id,
+            role="assistant",
+            content=result.text,
+            created_at=now,
+            model=model,
+            effort=effort,
+            input_tokens=tin,
+            output_tokens=tout,
+            cost_usd=result.cost_usd,
+            latency_ms=latency_ms,
+        )
+    )
+    session.model, session.effort = model, effort
+    session.updated_at = now
+    session.message_count += 2
+    session.input_tokens += tin
+    session.output_tokens += tout
+    session.total_cost_usd += result.cost_usd or 0.0
+    if not session.title:
+        session.title = " ".join(content.split())[:_TITLE_LEN] or "Untitled"
+    db.commit()
+
+
 async def run_turn(
     db: Session,
     session: ChatSession,
@@ -68,60 +130,53 @@ async def run_turn(
 ) -> ClaudeResult:
     """Send one user message in `session` and persist both sides of the exchange."""
     async with _locks[session.id]:
-        db.refresh(session)
-        resume = session.claude_session_id
-        if resume and not transcript_paths(resume):
-            resume = None  # transcript lost (volume reset, manual cleanup): rebuild from our copy
-        new_id = None if resume else str(uuid.uuid4())
-        if resume:
-            prompt = content
-        else:
-            history = [(m.role, m.content) for m in session.messages]
-            prompt = render_transcript(history, content)
-        release_connection(db)
-
+        prompt, new_id, resume = _prepare_turn(db, session, content)
         started = time.monotonic()
-        result = await run_claude(
-            prompt,
-            model=model,
-            effort=effort,
-            system_prompt=session.system_prompt or settings["default_system_prompt"],
-            timeout_s=float(settings["request_timeout_s"]),
-            max_budget_usd=settings["max_budget_usd_per_request"],
-            session_id=new_id,
-            resume=resume,
-        )
+        result = await run_claude(prompt, **_run_args(session, settings, model, effort, new_id, resume))
         latency_ms = int((time.monotonic() - started) * 1000)
-
-        now = utcnow()
-        usage = result.usage
-        tin, tout = usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
-        session.claude_session_id = result.session_id or new_id or resume
-        db.add(ChatMessage(session_id=session.id, role="user", content=content, created_at=now))
-        db.add(
-            ChatMessage(
-                session_id=session.id,
-                role="assistant",
-                content=result.text,
-                created_at=now,
-                model=model,
-                effort=effort,
-                input_tokens=tin,
-                output_tokens=tout,
-                cost_usd=result.cost_usd,
-                latency_ms=latency_ms,
-            )
-        )
-        session.model, session.effort = model, effort
-        session.updated_at = now
-        session.message_count += 2
-        session.input_tokens += tin
-        session.output_tokens += tout
-        session.total_cost_usd += result.cost_usd or 0.0
-        if not session.title:
-            session.title = " ".join(content.split())[:_TITLE_LEN] or "Untitled"
-        db.commit()
+        _store_turn(db, session, content, result, model=model, effort=effort, new_id=new_id, resume=resume,
+                    latency_ms=latency_ms)  # fmt: skip
         return result
+
+
+async def stream_turn(
+    db: Session,
+    session: ChatSession,
+    content: str,
+    *,
+    model: str,
+    effort: str,
+    settings: dict,
+) -> AsyncIterator["str | ClaudeResult"]:
+    """Streaming run_turn: yields text deltas, then the ClaudeResult once the turn is stored.
+
+    The session's lock is held for the whole stream. If the run fails or the consumer goes away part way,
+    nothing is stored and the Claude transcript is dropped: the killed run may have written half a turn
+    into it, so the next turn rebuilds the conversation from the stored messages instead of resuming.
+    """
+    async with _locks[session.id]:
+        prompt, new_id, resume = _prepare_turn(db, session, content)
+        started = time.monotonic()
+        result = None
+        try:
+            events = stream_claude(prompt, **_run_args(session, settings, model, effort, new_id, resume))
+            async with aclosing(events):
+                async for item in events:
+                    if isinstance(item, ClaudeResult):
+                        result = item
+                    else:
+                        yield item
+        finally:
+            if result is None:
+                for claude_id in (new_id, resume):
+                    delete_transcript(claude_id)
+                if session.claude_session_id:
+                    session.claude_session_id = None
+                    db.commit()
+        latency_ms = int((time.monotonic() - started) * 1000)
+        _store_turn(db, session, content, result, model=model, effort=effort, new_id=new_id, resume=resume,
+                    latency_ms=latency_ms)  # fmt: skip
+        yield result
 
 
 def delete_session(db: Session, session: ChatSession) -> None:

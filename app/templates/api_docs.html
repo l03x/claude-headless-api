@@ -68,6 +68,7 @@
     <a href="#authentication">Authentication</a>
     <a href="#models-effort">Models &amp; effort</a>
     <a href="#sessions">Sessions</a>
+    <a href="#streaming">Streaming</a>
     <a href="#errors">Errors</a>
     <a href="#limits">Limits &amp; unsupported</a>
     {% for g in groups %}
@@ -151,6 +152,20 @@
       {{ code_tabs(guide.sessions) }}
     </section>
 
+    <section id="streaming">
+      <h2>Streaming</h2>
+      <p>Send <code>"stream": true</code> to receive the reply as it is written, as OpenAI-style server-sent events:
+        <code>data:</code> lines holding <code>chat.completion.chunk</code> objects (text in <code>choices[0].delta.content</code>),
+        then <code>data: [DONE]</code>. It works on chat completions (with or without <code>session_id</code>) and on session messages.</p>
+      <ul>
+        <li><code>"stream_options": {"include_usage": true}</code> adds a final chunk with <code>usage</code>.</li>
+        <li>Errors before any text are ordinary JSON error responses; an error after text has started arrives as one
+          <code>data: {"error": …}</code> event, with no <code>[DONE]</code>.</li>
+        <li>Disconnecting stops the run. An interrupted session turn is not stored.</li>
+      </ul>
+      {{ code_tabs(guide.streaming) }}
+    </section>
+
     <section id="errors">
       <h2>Errors</h2>
       <p>Errors use OpenAI's shape, so SDKs raise their usual exceptions:</p>
@@ -159,7 +174,7 @@
       <table class="fields">
         <thead><tr><th>Status</th><th><code>code</code></th><th>Meaning</th></tr></thead>
         <tbody>
-          <tr><td>400</td><td><code>model_not_found</code>, <code>stream_unsupported</code>, <code>null</code></td><td>Invalid JSON or fields, unknown model, streaming requested, non-text content, last message not from the user.</td></tr>
+          <tr><td>400</td><td><code>model_not_found</code>, <code>null</code></td><td>Invalid JSON or fields, unknown model, non-text content, last message not from the user.</td></tr>
           <tr><td>401</td><td><code>missing_api_key</code>, <code>invalid_api_key</code>, <code>api_key_revoked</code>, <code>api_key_expired</code></td><td>The token is missing or unusable.</td></tr>
           <tr><td>403</td><td><code>user_disabled</code>, <code>model_not_allowed</code>, <code>effort_not_allowed</code></td><td>The token may not do this.</td></tr>
           <tr><td>404</td><td><code>session_not_found</code></td><td>No such session for your user.</td></tr>
@@ -175,7 +190,6 @@
     <section id="limits">
       <h2>Limits &amp; unsupported features</h2>
       <ul>
-        <li><strong>No streaming</strong> — <code>stream: true</code> is rejected; the full reply arrives at once.</li>
         <li><strong>Text only</strong> — image, audio and file inputs are rejected.</li>
         <li><strong>No tool / function calling</strong> — Claude runs without tools.</li>
         <li><strong>Sampling controls are ignored</strong> — <code>temperature</code>, <code>top_p</code>, <code>max_tokens</code>, <code>stop</code>, <code>seed</code>, <code>n</code>, … are accepted but have no effect.</li>

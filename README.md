@@ -30,7 +30,8 @@ these terms without notice. If you are unsure about your case, [ask Anthropic](h
 
 ## Features
 
-- `POST /v1/chat/completions` and `GET /v1/models`: OpenAI SDKs work by changing `base_url`.
+- `POST /v1/chat/completions` and `GET /v1/models`: OpenAI SDKs work by changing `base_url`, streaming
+  (`stream: true`) included.
 - Pick the model (`opus`, `sonnet`, `haiku`, `fable` or a full id) and the effort (`low` … `max`) per request.
 - Sessions (`/v1/sessions`) resume the same Claude Code conversation turn after turn.
 - Admin dashboard (`/admin`):
@@ -59,6 +60,7 @@ cp .env.example .env
 | `OTEL_EXPORTER_OTLP_ENDPOINT`                        | Optional: send OpenTelemetry data to Alloy, e.g. `http://alloy:4318`. A ready-made stack with a dashboard is in [`grafana/`](grafana/README.md)       |
 
 ```bash
+docker network create claude-observability   # once: shared with the optional Grafana stack in grafana/
 docker compose up -d --build
 ```
 

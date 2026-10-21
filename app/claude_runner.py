@@ -7,7 +7,9 @@ import signal
 import tempfile
 import time
 import uuid
-from contextlib import nullcontext
+from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import aclosing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,8 @@ _ENV_PASSTHROUGH = (
 )
 
 _ERR_EXCERPT = 2000
+# stream-json puts the whole reply on its final `result` line; asyncio's default 64 KiB line limit is too small.
+_STREAM_LINE_LIMIT = 16 * 1024 * 1024
 
 
 @dataclass
@@ -52,38 +56,53 @@ class ClaudeError(Exception):
 
 
 class ConcurrencyGate:
-    """A semaphore whose size can change at runtime and which reports its own load."""
+    """A semaphore whose size can change at runtime and which reports its own load.
+
+    Releasing never awaits. A streamed reply is cancelled by anyio when its client disconnects, and anyio
+    re-raises the cancellation at every await during cleanup, so an awaiting release could lose its slot
+    for good and the gate would slowly fill up.
+    """
 
     def __init__(self, limit: int):
         self.limit = max(1, limit)
         self.in_flight = 0
-        self.queued = 0
-        self._cond: asyncio.Condition | None = None
+        self._waiters: deque[asyncio.Future] = deque()
 
-    def _condition(self) -> asyncio.Condition:
-        # Created lazily so it binds to the running loop (tests spin up several).
-        if self._cond is None:
-            self._cond = asyncio.Condition()
-        return self._cond
+    @property
+    def queued(self) -> int:
+        return len(self._waiters)
 
     def resize(self, limit: int) -> None:
         self.limit = max(1, limit)
+        self._wake()
+
+    def _wake(self) -> None:
+        # Hand free slots to waiters in arrival order; the slot is counted as theirs right away.
+        while self._waiters and self.in_flight < self.limit:
+            waiter = self._waiters.popleft()
+            if not waiter.done():
+                self.in_flight += 1
+                waiter.set_result(None)
 
     async def __aenter__(self) -> None:
-        cond = self._condition()
-        async with cond:
-            self.queued += 1
-            try:
-                await cond.wait_for(lambda: self.in_flight < self.limit)
-            finally:
-                self.queued -= 1
+        if self.in_flight < self.limit and not self._waiters:
             self.in_flight += 1
+            return
+        waiter = asyncio.get_running_loop().create_future()
+        self._waiters.append(waiter)
+        try:
+            await waiter
+        except BaseException:
+            if waiter.done() and not waiter.cancelled():
+                self.in_flight -= 1  # a slot was handed over just as we gave up: pass it on
+                self._wake()
+            elif waiter in self._waiters:
+                self._waiters.remove(waiter)
+            raise
 
     async def __aexit__(self, *exc) -> None:
-        cond = self._condition()
-        async with cond:
-            self.in_flight -= 1
-            cond.notify_all()
+        self.in_flight -= 1
+        self._wake()
 
 
 gate = ConcurrencyGate(4)
@@ -132,11 +151,15 @@ def build_argv(
     max_budget_usd: float | None = None,
     session_id: str | None = None,
     resume: str | None = None,
+    stream: bool = False,
 ) -> list[str]:
+    # stream-json needs --verbose in print mode; --include-partial-messages adds the token-level deltas.
+    output = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] if stream else [
+        "--output-format", "json"]  # fmt: skip
     argv = [
         get_settings().claude_bin,
         "-p",
-        "--output-format", "json",
+        *output,
         "--model", model,
         "--effort", effort,
         "--tools", "",
@@ -290,7 +313,11 @@ def parse_output(returncode: int | None, stdout: bytes, stderr: bytes) -> Claude
         raise ClaudeError(f"Claude CLI exited with code {returncode}: {detail or 'no output'}") from None
     if not isinstance(data, dict):
         raise ClaudeError("Claude CLI returned unexpected output.")
+    return result_from(data, returncode)
 
+
+def result_from(data: dict, returncode: int | None) -> ClaudeResult:
+    """Build the result from the CLI's final JSON object (the whole json output, or stream-json's `result`)."""
     if data.get("is_error") or returncode != 0:
         detail = str(data.get("result") or data.get("subtype") or "unknown error")[:_ERR_EXCERPT]
         raise ClaudeError(f"Claude CLI error: {detail}")
@@ -305,6 +332,173 @@ def parse_output(returncode: int | None, stdout: bytes, stderr: bytes) -> Claude
         duration_ms=data.get("duration_ms"),
         stop_reason=data.get("stop_reason"),
     )
+
+
+async def stream_claude(
+    prompt: str,
+    *,
+    model: str,
+    effort: str,
+    system_prompt: str,
+    timeout_s: float,
+    json_schema: dict | None = None,
+    max_budget_usd: float | None = None,
+    session_id: str | None = None,
+    resume: str | None = None,
+) -> AsyncIterator["str | ClaudeResult"]:
+    """Like run_claude, but yields the reply's text deltas as they arrive, then one ClaudeResult.
+
+    Errors raise ClaudeError, before or after some text. If the consumer stops early (cancellation, or
+    closing the generator on client disconnect) the CLI process group is killed.
+    """
+    argv = build_argv(
+        model=model,
+        effort=effort,
+        system_prompt=system_prompt,
+        json_schema=json_schema,
+        max_budget_usd=max_budget_usd,
+        session_id=session_id,
+        resume=resume,
+        stream=True,
+    )
+    persistent = bool(session_id or resume)
+    mode = "resume" if resume else "new" if session_id else "stateless"
+    span = telemetry.start_claude_span(model, effort, mode)
+    queued_at = time.monotonic()
+    queue_span = telemetry.child_span(span, "claude.queue_wait")
+    queue_wait = run_s = None
+    result, outcome, error = None, "cancelled", None
+    try:
+        async with gate:
+            queue_wait = time.monotonic() - queued_at
+            queue_span.end()
+            started = time.monotonic()
+            process_span = telemetry.child_span(span, "claude.process")
+            first = True
+            try:
+                events = _stream_process(argv, prompt, persistent, timeout_s, structured=json_schema is not None)
+                async with aclosing(events):
+                    async for item in events:
+                        if isinstance(item, ClaudeResult):
+                            result = item
+                            continue
+                        if first:
+                            telemetry.record_ttft(model, time.monotonic() - started)
+                            first = False
+                        yield item
+            finally:
+                process_span.end()
+            run_s = time.monotonic() - started
+        if result is None:
+            raise ClaudeError("Claude CLI ended without a result.")
+        outcome = "ok"
+        yield result
+    except ClaudeError as e:
+        outcome, error = ("timeout" if e.status == 504 else "error"), e.message
+        raise
+    finally:
+        if queue_wait is None:  # cancelled or failed while still queued
+            queue_wait = time.monotonic() - queued_at
+            queue_span.end()
+        telemetry.record_run(
+            span,
+            model=model,
+            effort=effort,
+            mode=mode,
+            outcome=outcome,
+            queue_wait_s=queue_wait,
+            run_s=run_s,
+            usage=result.usage if result else None,
+            cost_usd=result.cost_usd if result else None,
+            error=error,
+        )
+        span.end()
+
+
+def _text_delta(event: dict) -> str | None:
+    """The text of a stream-json `stream_event` carrying a text delta, else None.
+
+    Thinking deltas and anything from a sub-agent (non-null parent_tool_use_id) are skipped.
+    """
+    if event.get("type") != "stream_event" or event.get("parent_tool_use_id") is not None:
+        return None
+    inner = event.get("event") or {}
+    delta = inner.get("delta") or {}
+    if inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+        return delta.get("text") or None
+    return None
+
+
+async def _stream_process(
+    argv: list[str], prompt: str, persistent: bool, timeout_s: float, *, structured: bool
+) -> AsyncIterator["str | ClaudeResult"]:
+    if persistent:
+        workdir = nullcontext(str(sessions_workdir()))
+    else:
+        workdir = tempfile.TemporaryDirectory(prefix="claude-req-")
+    with workdir as cwd:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=_child_env(),
+                start_new_session=True,
+                limit=_STREAM_LINE_LIMIT,
+            )
+        except FileNotFoundError as e:
+            raise ClaudeError(f"Claude CLI not found: {argv[0]}", 500) from e
+        stderr_task = asyncio.ensure_future(proc.stderr.read())  # drained alongside, so the pipe never fills
+        deadline = time.monotonic() + timeout_s
+        final: dict | None = None
+        streamed = False
+        try:
+            proc.stdin.write(prompt.encode())
+            await proc.stdin.drain()
+            proc.stdin.close()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                line = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                if not line:
+                    break
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "result":
+                    final = event
+                elif not structured:  # structured output is only meaningful once complete
+                    text = _text_delta(event)
+                    if text:
+                        streamed = True
+                        yield text
+            await asyncio.wait_for(proc.wait(), max(0.1, deadline - time.monotonic()))
+            stderr = await asyncio.wait_for(stderr_task, 5)
+        except asyncio.TimeoutError:
+            raise ClaudeError(f"Claude did not answer within {timeout_s:g}s.", 504) from None
+        finally:
+            # Synchronous steps first: under anyio cancellation every await here can raise again.
+            running = proc.returncode is None
+            if running:  # timeout, error, or the consumer went away
+                _kill(proc)
+            if not stderr_task.done():
+                stderr_task.cancel()
+            if running:
+                await proc.wait()
+
+    if final is None:
+        detail = stderr.decode(errors="replace").strip()[:_ERR_EXCERPT]
+        raise ClaudeError(f"Claude CLI exited with code {proc.returncode}: {detail or 'no output'}")
+    result = result_from(final, proc.returncode)
+    if not streamed and result.text:
+        yield result.text  # no deltas arrived (structured output, or a CLI that only sent `result`)
+    yield result
 
 
 async def claude_version() -> str:

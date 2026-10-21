@@ -34,7 +34,8 @@ def client(tmp_path, monkeypatch):
     # The runner forwards only allow-listed env vars; let the fake CLI's switches through.
     from app.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "claude_env_passthrough", "FAKE_CLAUDE_MODE,FAKE_CLAUDE_ARGS_FILE")
+    passthrough = "FAKE_CLAUDE_MODE,FAKE_CLAUDE_ARGS_FILE,FAKE_CLAUDE_DELTA_DELAY_MS"
+    monkeypatch.setattr(get_settings(), "claude_env_passthrough", passthrough)
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "claude_data_dir", str(tmp_path / "claude"))

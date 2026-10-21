@@ -118,7 +118,6 @@ def test_rate_limit(client, make_token):
 
 def test_invalid_requests(client, make_token):
     raw, _ = make_token()
-    assert chat(client, raw, stream=True).json()["error"]["code"] == "stream_unsupported"
     img = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]
     assert chat(client, raw, messages=img).status_code == 400
     assert chat(client, raw, messages=[{"role": "assistant", "content": "x"}]).status_code == 400

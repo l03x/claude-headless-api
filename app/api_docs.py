@@ -448,6 +448,43 @@ console.log(await ask("My name is Amina. What is 1/2 + 1/4?"));
 console.log(await ask("What is my name?"));
 """),
     ],
+    "streaming": [
+        _s("cURL", "bash", """
+# -N prints chunks as they arrive
+curl -N http://localhost:8000/v1/chat/completions \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "sonnet", "stream": true, "messages": [{"role": "user", "content": "Tell me a short story."}]}'
+"""),
+        _s("Python (openai)", "python", """
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="chk_...")
+
+stream = client.chat.completions.create(
+    model="sonnet",
+    messages=[{"role": "user", "content": "Tell me a short story."}],
+    stream=True,
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+"""),
+        _s("JavaScript (openai)", "javascript", """
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "http://localhost:8000/v1", apiKey: process.env.API_KEY });
+
+const stream = await client.chat.completions.create({
+  model: "sonnet",
+  messages: [{ role: "user", content: "Tell me a short story." }],
+  stream: true,
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}
+"""),
+    ],
     "errors": [
         _s("Python (openai)", "python", """
 import time

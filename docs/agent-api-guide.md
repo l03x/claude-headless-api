@@ -12,7 +12,7 @@ machine-readable contract is `/openapi.json` (or `/openapi.yaml`), and the human
 - Base URL: `http://localhost:8000/v1`
 - Auth header: `Authorization: Bearer chk_…` (or `x-api-key: chk_…`). Tokens come from the server's administrator.
 - Content type: `application/json` in and out. Text only.
-- One request returns one complete reply. There is **no streaming**: never send `stream: true`.
+- One request returns one complete reply, or a stream of it with `stream: true` (see Streaming).
 
 ## Make a call
 
@@ -31,6 +31,19 @@ r = client.chat.completions.create(model="sonnet", messages=[{"role": "user", "c
                                    extra_body={"effort": "low"})
 print(r.choices[0].message.content)
 ```
+
+## Streaming
+
+Add `"stream": true` to get the reply as server-sent events, exactly like OpenAI's API:
+`data: {chat.completion.chunk}` lines with pieces in `choices[0].delta.content`, then `data: [DONE]`. OpenAI SDKs
+handle this with `stream=True`. It works on `/v1/chat/completions` (with or without `session_id`) and on
+`/v1/sessions/<id>/messages`.
+
+- `"stream_options": {"include_usage": true}` adds a final chunk with `usage` before `[DONE]`.
+- Errors before any text arrive as a normal JSON error response (check the HTTP status first).
+- An error after text has started arrives as one `data: {"error": {…}}` event and the stream ends without
+  `[DONE]`. Treat the partial text as incomplete.
+- If you disconnect, the run stops. An interrupted session turn is not stored, so send it again.
 
 ## Choosing `model` and `effort`
 
@@ -91,7 +104,7 @@ Errors look like `{"error": {"message": "…", "type": "…", "param": null, "co
 
 | Status | `code` | What to do |
 |---|---|---|
-| 400 | `model_not_found`, `stream_unsupported`, `null` | Fix the request. Don't retry unchanged |
+| 400 | `model_not_found`, `null` | Fix the request. Don't retry unchanged |
 | 401 | `missing_api_key`, `invalid_api_key`, `api_key_revoked`, `api_key_expired` | Stop. Ask a human for a valid token |
 | 403 | `model_not_allowed`, `effort_not_allowed`, `user_disabled` | Use an allowed model or a lower effort; otherwise stop |
 | 404 | `session_not_found` | The session was deleted or expired. Start a new one and re-send the context you need |
