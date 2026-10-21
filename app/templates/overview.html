@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_macros.html" import log_table %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+<div class="grid">
+  <div class="stat"><div class="label">Requests · 24h</div><div class="value">{{ day.total|num }}</div><div class="sub">{{ day.failed|num }} failed · 7d: {{ week.total|num }}</div></div>
+  <div class="stat"><div class="label">Cost · 24h</div><div class="value">{{ day.cost|cost }}</div><div class="sub">7d: {{ week.cost|cost }}</div></div>
+  <div class="stat"><div class="label">Tokens · 24h</div><div class="value">{{ (day.input_tokens + day.output_tokens)|num }}</div><div class="sub">{{ day.input_tokens|num }} in · {{ day.output_tokens|num }} out</div></div>
+  <div class="stat"><div class="label">Avg latency · 24h</div><div class="value">{{ (day.avg_latency|string + " ms") if day.avg_latency else "—" }}</div><div class="sub">successful requests</div></div>
+  <div class="stat"><div class="label">Users / active tokens</div><div class="value">{{ counts.users }} / {{ counts.active_tokens }}</div><div class="sub">{{ gate.in_flight }} running · {{ gate.queued }} queued now</div></div>
+</div>
+
+<div class="card">
+  <h2>Requests per day · last 14 days <span class="muted" style="font-weight:400">(red = failed)</span></h2>
+  <div class="chart">
+    {% for s in series %}
+      <div class="col" title="{{ s.date.isoformat() }}: {{ s.total }} requests, {{ s.failed }} failed">
+        <div class="bar" style="height: {{ (s.total / peak * 100)|round(1) }}%; display:flex; flex-direction:column; justify-content:flex-start;">
+          {% if s.failed %}<div class="fail" style="height: {{ (s.failed / s.total * 100)|round(1) }}%"></div>{% endif %}
+        </div>
+        <div class="lbl">{{ s.date.strftime("%d/%m") }}</div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="cols">
+  <div class="card">
+    <h2>Top users · 7 days</h2>
+    <table><thead><tr><th>User</th><th class="num">Requests</th><th class="num">Cost</th></tr></thead><tbody>
+    {% for name, n, cost, uid in top_users %}
+      <tr><td><a href="/admin/users/{{ uid }}">{{ name }}</a></td><td class="num">{{ n|num }}</td><td class="num">{{ cost|cost }}</td></tr>
+    {% else %}<tr><td colspan="3" class="muted">No traffic yet.</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+  <div class="card">
+    <h2>Recent failures</h2>
+    <table><thead><tr><th>Time</th><th>User</th><th>Error</th></tr></thead><tbody>
+    {% for l in recent_errors %}
+      <tr><td class="mono"><a href="/admin/logs/{{ l.id }}">{{ l.created_at|dt }}</a></td><td>{{ l.username or "—" }}</td><td>{{ (l.error or "")[:90] }}</td></tr>
+    {% else %}<tr><td colspan="3" class="muted">Nothing failed. 🎉</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</div>
+{% endblock %}

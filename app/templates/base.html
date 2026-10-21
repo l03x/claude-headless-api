@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+{% include "_head.html" %}
+  <title>{% block title %}Admin{% endblock %} · Claude Headless API</title>
+  {% block head %}{% endblock %}
+</head>
+<body>
+{% if admin %}
+<div class="layout">
+  <nav class="side">
+    <div class="brand">Claude Headless API<small>admin dashboard</small></div>
+    {% for key, label, href in [("overview","Overview","/admin"),("chat","Chat","/admin/chat"),("sessions","Sessions","/admin/sessions"),("users","Users","/admin/users"),("tokens","API tokens","/admin/tokens"),("logs","Logs","/admin/logs"),("settings","Settings","/admin/settings"),("system","System","/admin/system")] %}
+      <a href="{{ href }}" class="{{ 'active' if nav == key }}">{{ label }}</a>
+    {% endfor %}
+    <a href="/docs" target="_blank">API docs ↗</a>
+    <div class="spacer"></div>
+    {% include "_theme_switch.html" %}
+    <div class="who">Signed in as <strong>{{ admin.username }}</strong></div>
+    <form method="post" action="/admin/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button class="small">Sign out</button>
+    </form>
+  </nav>
+  <main class="{% block main_class %}{% endblock %}">
+    {% for kind, msg in messages %}<div class="flash {{ kind }}">{{ msg }}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% else %}
+  {% block bare %}{% endblock %}
+{% endif %}
+</body>
+</html>

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, log_table, token_fields, csrf_field with context %}
+{% block title %}Token {{ token.name }}{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>Token “{{ token.name }}” {{ badge(token.status(now)) }}</h1>
+  <div class="actions">
+    <a class="btn" href="/admin/logs?token_id={{ token.id }}">View logs</a>
+    <form class="inline" method="post" action="/admin/tokens/{{ token.id }}/revoke">{{ csrf_field() }}<button>{{ "Restore" if token.revoked_at else "Revoke" }}</button></form>
+    <form class="inline" method="post" action="/admin/tokens/{{ token.id }}/delete" data-confirm="Delete this token permanently?">{{ csrf_field() }}<button class="danger">Delete</button></form>
+  </div>
+</div>
+<div class="cols">
+  <div class="card">
+    <h2>Details</h2>
+    <dl class="kv">
+      <dt>User</dt><dd><a href="/admin/users/{{ token.user_id }}">{{ token.user.username }}</a></dd>
+      <dt>Prefix</dt><dd class="mono">{{ token.prefix }}…</dd>
+      <dt>Created</dt><dd class="mono">{{ token.created_at|dt }} UTC</dd>
+      <dt>Last used</dt><dd class="mono">{{ token.last_used_at|dt }}</dd>
+      <dt>Revoked</dt><dd class="mono">{{ token.revoked_at|dt }}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h2>Limits</h2>
+    <form method="post" action="/admin/tokens/{{ token.id }}">
+      {{ csrf_field() }}
+      {{ token_fields(enabled_models, token) }}
+      <button class="primary">Save</button>
+    </form>
+  </div>
+</div>
+<div class="card"><h2>Recent requests</h2>{{ log_table(recent) }}</div>
+{% endblock %}

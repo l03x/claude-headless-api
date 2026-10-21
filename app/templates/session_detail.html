@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+{% block title %}{{ session.title or "Session" }}{% endblock %}
+{% block head %}<script src="/static/chat.js" defer></script>{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>{{ session.title or "Untitled" }}</h1>
+  <div class="actions">
+    {% if session.user_id == admin.id %}<a class="btn primary" href="/admin/chat/{{ session.id }}">Continue in chat</a>{% endif %}
+    <a class="btn" href="/admin/logs?{{ 'user_id=' ~ session.user_id }}">User's logs</a>
+    <form class="inline" method="post" action="/admin/sessions/{{ session.id }}/delete" data-confirm="Delete this conversation and its Claude transcript?">{{ csrf_field() }}<button class="danger">Delete</button></form>
+  </div>
+</div>
+<div class="cols">
+  <div class="card">
+    <dl class="kv">
+      <dt>Id</dt><dd class="mono">{{ session.id }}</dd>
+      <dt>User</dt><dd><a href="/admin/users/{{ session.user_id }}">{{ session.user.username }}</a></dd>
+      <dt>Source</dt><dd>{{ session.source }}{% if session.token_id %} · <a href="/admin/tokens/{{ session.token_id }}">token #{{ session.token_id }}</a>{% endif %}</dd>
+      <dt>Model / effort</dt><dd>{{ session.model }} / {{ session.effort }} <span class="muted">(last used)</span></dd>
+      <dt>Created</dt><dd class="mono">{{ session.created_at|dt }} UTC</dd>
+      <dt>Last active</dt><dd class="mono">{{ session.updated_at|dt }} UTC</dd>
+      <dt>Usage</dt><dd>{{ session.message_count // 2 }} turns · {{ session.input_tokens|num }} in / {{ session.output_tokens|num }} out · {{ session.total_cost_usd|cost }}</dd>
+      <dt>Claude session</dt><dd class="mono">{{ session.claude_session_id or "—" }}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h2>System prompt</h2>
+    {% if session.system_prompt %}<pre>{{ session.system_prompt }}</pre>{% else %}<p class="muted">Default from Settings.</p>{% endif %}
+    <form method="post" action="/admin/chat/{{ session.id }}/rename" class="filters" style="margin-top:14px">
+      {{ csrf_field() }}<input type="hidden" name="next" value="/admin/sessions/{{ session.id }}">
+      <div class="field" style="flex:1"><label>Title</label><input type="text" name="title" value="{{ session.title or '' }}"></div>
+      <button>Rename</button>
+    </form>
+  </div>
+</div>
+<div class="card">
+  <h2>Transcript</h2>
+  <div class="messages" style="padding:0;overflow:visible">
+  {% for m in session.messages %}
+    <div class="msg {{ m.role }}">
+      <div class="bubble" data-md>{{ m.content }}</div>
+      <div class="meta">{{ m.created_at|dt }}{% if m.role == "assistant" %} · {{ m.model }} · {{ m.effort }} · {{ m.input_tokens|num }} in / {{ m.output_tokens|num }} out · {{ m.cost_usd|cost }}{% endif %}</div>
+    </div>
+  {% else %}<p class="muted">No messages yet.</p>{% endfor %}
+  </div>
+</div>
+{% endblock %}

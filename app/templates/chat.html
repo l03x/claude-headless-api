@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ session.title if session and session.title else "Chat" }}{% endblock %}
+{% block head %}<script src="/static/chat.js" defer></script>{% endblock %}
+{% block main_class %}chat-main{% endblock %}
+{% block content %}
+<div class="chat" id="chat" data-session="{{ session.id if session else '' }}" data-csrf="{{ csrf }}">
+  <aside class="chat-list">
+    <a class="btn primary" href="/admin/chat" style="text-align:center">+ New chat</a>
+    <div class="chat-list-items">
+    {% for s in sessions %}
+      <a href="/admin/chat/{{ s.id }}" class="{{ 'active' if session and s.id == session.id }}">
+        <span class="t">{{ s.title or "Untitled" }}</span>
+        <span class="muted">{{ s.updated_at|dt }} · {{ s.message_count // 2 }} turns</span>
+      </a>
+    {% else %}
+      <p class="muted" style="padding:8px">No conversations yet.</p>
+    {% endfor %}
+    </div>
+  </aside>
+
+  <section class="chat-pane">
+    <header class="chat-head">
+      {% if session %}
+        <form method="post" action="/admin/chat/{{ session.id }}/rename" class="chat-title">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="next" value="/admin/chat/{{ session.id }}">
+          <input type="text" name="title" value="{{ session.title or '' }}" placeholder="Untitled" aria-label="Conversation title">
+        </form>
+        <div class="actions">
+          <span class="muted">{{ session.total_cost_usd|cost }}</span>
+          <a class="btn small" href="/admin/sessions/{{ session.id }}">Details</a>
+          <form class="inline" method="post" action="/admin/sessions/{{ session.id }}/delete" data-confirm="Delete this conversation?">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="next" value="/admin/chat">
+            <button class="small danger">Delete</button>
+          </form>
+        </div>
+      {% else %}
+        <h1 style="margin:0">New chat</h1>
+      {% endif %}
+    </header>
+
+    <div class="messages" id="messages">
+      {% if session %}
+        {% for m in session.messages %}
+          <div class="msg {{ m.role }}">
+            <div class="bubble" data-md>{{ m.content }}</div>
+            {% if m.role == "assistant" %}<div class="meta">{{ m.model }} · {{ m.effort }} · {{ m.input_tokens|num }} in / {{ m.output_tokens|num }} out · {{ m.cost_usd|cost }}{% if m.latency_ms %} · {{ "%.1f"|format(m.latency_ms / 1000) }}s{% endif %}</div>{% endif %}
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">
+          <p>Start a conversation with Claude. It is kept as a session: every reply resumes the same Claude Code conversation.</p>
+          <details>
+            <summary>System prompt</summary>
+            <textarea id="system-prompt" placeholder="{{ default_system_prompt }}"></textarea>
+            <div class="help muted">Fixed for the whole conversation. Empty = the default from Settings.</div>
+          </details>
+        </div>
+      {% endif %}
+    </div>
+
+    <form class="composer" id="composer">
+      <textarea id="content" rows="3" placeholder="Message Claude…  (Enter to send, Shift+Enter for a new line)" required autofocus></textarea>
+      <div class="composer-bar">
+        <select id="model" aria-label="Model">{% for m in enabled_models %}<option {{ 'selected' if m == model }}>{{ m }}</option>{% endfor %}</select>
+        <select id="effort" aria-label="Effort">{% for e in EFFORTS %}<option {{ 'selected' if e == effort }}>{{ e }}</option>{% endfor %}</select>
+        <span class="muted" id="status"></span>
+        <button class="primary" id="send">Send</button>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

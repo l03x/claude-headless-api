@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+{% include "_head.html" %}
+  <title>API reference · Claude Headless API</title>
+  <script src="/static/docs.js" defer></script>
+</head>
+<body class="docs">
+
+{% macro code_tabs(samples) %}
+<div class="code-tabs">
+  <div class="code-tabs-bar" role="tablist">
+    {% for s in samples %}
+      <button type="button" role="tab" data-lang="{{ s.lang }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ s.label }}</button>
+    {% endfor %}
+    <button type="button" class="code-copy" title="Copy to clipboard">Copy</button>
+  </div>
+  {% for s in samples %}
+    <pre class="code" data-lang="{{ s.lang }}" {{ '' if loop.first else 'hidden' }}><code>{{ s.source }}</code></pre>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% macro json_examples(examples) %}
+  {% for ex in examples %}
+    {% if examples|length > 1 %}<div class="example-label">{{ ex.summary }}</div>{% endif %}
+    <pre class="code json"><code>{{ ex.json }}</code></pre>
+  {% endfor %}
+{% endmacro %}
+
+{% macro field_table(rows) %}
+<div class="table-wrap">
+<table class="fields">
+  <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+  {% for f in rows %}
+    <tr>
+      <td class="fname"><code>{{ f.name|breakable }}</code>{% if f.required %} <span class="req">required</span>{% endif %}</td>
+      <td class="ftype"><code>{{ f.type }}</code></td>
+      <td>
+        {{ f.description }}
+        {% if f.enum %}<div class="enum">One of: {% for v in f.enum %}<code>{{ v }}</code>{{ ", " if not loop.last }}{% endfor %}</div>{% endif %}
+        {% if f.default is not none %}<div class="enum">Default: <code>{{ f.default|tojson }}</code></div>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+<header class="docs-top">
+  <a class="docs-brand" href="/docs">Claude Headless API <span class="muted">API reference · v{{ version }}</span></a>
+  <nav class="docs-links">
+    <a href="/openapi.yaml" download="openapi.yaml">OpenAPI YAML</a>
+    <a href="/openapi.json" download="openapi.json">OpenAPI JSON</a>
+    <a href="/llms.txt" title="Guide for AI agents calling this API">llms.txt</a>
+    <a href="/admin">Dashboard</a>
+    {% include "_theme_switch.html" %}
+  </nav>
+</header>
+
+<div class="docs-layout">
+  <aside class="docs-toc" aria-label="Contents">
+    <div class="toc-group">Guide</div>
+    <a href="#introduction">Introduction</a>
+    <a href="#quickstart">Quickstart</a>
+    <a href="#authentication">Authentication</a>
+    <a href="#models-effort">Models &amp; effort</a>
+    <a href="#sessions">Sessions</a>
+    <a href="#errors">Errors</a>
+    <a href="#limits">Limits &amp; unsupported</a>
+    {% for g in groups %}
+      <div class="toc-group">{{ g.name }}</div>
+      {% for op in g.ops %}
+        <a href="#{{ op.id }}"><span class="m m-{{ op.method|lower }}">{{ op.method }}</span> {{ op.path }}</a>
+      {% endfor %}
+    {% endfor %}
+    <div class="toc-group">Schemas</div>
+    {% for s in schemas %}<a href="#schema-{{ s.name }}">{{ s.name }}</a>{% endfor %}
+  </aside>
+
+  <main class="docs-main">
+    <section id="introduction">
+      <h1>{{ info.title }}</h1>
+      <div class="lead">{{ info.summary|md }}</div>
+      <p>Every completion is produced by running Claude Code in headless mode (<code>claude -p</code>) on this server, behind an
+        <strong>OpenAI-compatible</strong> interface: point any OpenAI SDK at <code>{{ base_url }}/v1</code> and it works.
+        Claude runs with <strong>no tools</strong>, so it behaves like a plain text model.</p>
+      <div class="callout">
+        <div><strong>Base URL</strong> <code>{{ base_url }}/v1</code></div>
+        <div><strong>Auth</strong> <code>Authorization: Bearer chk_…</code></div>
+        <div><strong>Format</strong> JSON in, JSON out</div>
+      </div>
+    </section>
+
+    <section id="quickstart">
+      <h2>Quickstart</h2>
+      <ol>
+        <li>Ask an administrator for an API token (created under <em>API tokens</em> in the dashboard). It looks like <code>chk_…</code>.</li>
+        <li>Send a chat completion. With the official SDKs, only <code>base_url</code> and <code>api_key</code> change.</li>
+      </ol>
+      {{ code_tabs(guide.quickstart) }}
+    </section>
+
+    <section id="authentication">
+      <h2>Authentication</h2>
+      <p>Every <code>/v1</code> endpoint needs a token, sent as <code>Authorization: Bearer &lt;token&gt;</code> or <code>x-api-key: &lt;token&gt;</code>.
+        A token belongs to a user and may carry restrictions set by the administrator:</p>
+      <ul>
+        <li><strong>Expiry</strong> — after it, requests fail with <code>401 api_key_expired</code>.</li>
+        <li><strong>Allowed models</strong> — other models fail with <code>403 model_not_allowed</code>; <code>GET /v1/models</code> lists only the allowed ones.</li>
+        <li><strong>Maximum effort</strong> — higher efforts fail with <code>403 effort_not_allowed</code>.</li>
+        <li><strong>Rate limit</strong> — requests per minute; beyond it, <code>429 rate_limit_exceeded</code>.</li>
+      </ul>
+      {{ code_tabs(guide.auth) }}
+    </section>
+
+    <section id="models-effort">
+      <h2>Models &amp; effort</h2>
+      <p><code>model</code> is passed to <code>claude --model</code>: an alias (<code>opus</code>, <code>sonnet</code>, <code>haiku</code>, <code>fable</code>) always means the latest
+        model of that family, or use a full id such as <code>claude-sonnet-5-5</code>. Omit it to use the server's default.</p>
+      <p><code>effort</code> is passed to <code>claude --effort</code> and controls how long Claude thinks:</p>
+      <div class="table-wrap">
+      <table class="fields">
+        <thead><tr><th>Effort</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><code>low</code></td><td>Quick answers, classification, extraction. Fastest and cheapest.</td></tr>
+          <tr><td><code>medium</code></td><td>Everyday questions and writing.</td></tr>
+          <tr><td><code>high</code></td><td>Reasoning, code, multi-step problems.</td></tr>
+          <tr><td><code>xhigh</code></td><td>Hard problems that benefit from long deliberation.</td></tr>
+          <tr><td><code>max</code></td><td>The hardest problems, regardless of time and cost.</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>OpenAI's <code>reasoning_effort</code> is accepted too (<code>none</code> and <code>minimal</code> map to <code>low</code>). If both are sent, <code>effort</code> wins.</p>
+      {{ code_tabs(guide.effort) }}
+    </section>
+
+    <section id="sessions">
+      <h2>Sessions</h2>
+      <p>A stateless chat completion re-sends the whole conversation every time. A <strong>session</strong> keeps it on the server instead:
+        the first turn starts a Claude Code session and each later turn <em>resumes</em> it, so you send only the new message and Claude
+        reuses its prompt cache.</p>
+      <ul>
+        <li>Create one with <a href="#createSession"><code>POST /v1/sessions</code></a>, then talk with <a href="#sendSessionMessage"><code>POST /v1/sessions/{id}/messages</code></a>.</li>
+        <li>Or, from an OpenAI SDK, pass <code>session_id</code> in the request body: <code>"new"</code> starts one, an existing id continues it.</li>
+        <li>The system prompt is fixed per session; model and effort can change on any turn.</li>
+        <li>Sessions belong to your <strong>user</strong>: all of your tokens can use them, nobody else's can. Turns in one session run one at a time.</li>
+      </ul>
+      {{ code_tabs(guide.sessions) }}
+    </section>
+
+    <section id="errors">
+      <h2>Errors</h2>
+      <p>Errors use OpenAI's shape, so SDKs raise their usual exceptions:</p>
+      <pre class="code json"><code>{"error": {"message": "Invalid API key.", "type": "authentication_error", "param": null, "code": "invalid_api_key"}}</code></pre>
+      <div class="table-wrap">
+      <table class="fields">
+        <thead><tr><th>Status</th><th><code>code</code></th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td><code>model_not_found</code>, <code>stream_unsupported</code>, <code>null</code></td><td>Invalid JSON or fields, unknown model, streaming requested, non-text content, last message not from the user.</td></tr>
+          <tr><td>401</td><td><code>missing_api_key</code>, <code>invalid_api_key</code>, <code>api_key_revoked</code>, <code>api_key_expired</code></td><td>The token is missing or unusable.</td></tr>
+          <tr><td>403</td><td><code>user_disabled</code>, <code>model_not_allowed</code>, <code>effort_not_allowed</code></td><td>The token may not do this.</td></tr>
+          <tr><td>404</td><td><code>session_not_found</code></td><td>No such session for your user.</td></tr>
+          <tr><td>429</td><td><code>rate_limit_exceeded</code></td><td>Too many requests this minute; the message says when to retry.</td></tr>
+          <tr><td>502</td><td><code>upstream_error</code></td><td>Claude Code failed (not logged in, budget cap reached, …). Usually safe to retry later.</td></tr>
+          <tr><td>504</td><td><code>timeout</code></td><td>Claude did not answer within the server's timeout.</td></tr>
+        </tbody>
+      </table>
+      </div>
+      {{ code_tabs(guide.errors) }}
+    </section>
+
+    <section id="limits">
+      <h2>Limits &amp; unsupported features</h2>
+      <ul>
+        <li><strong>No streaming</strong> — <code>stream: true</code> is rejected; the full reply arrives at once.</li>
+        <li><strong>Text only</strong> — image, audio and file inputs are rejected.</li>
+        <li><strong>No tool / function calling</strong> — Claude runs without tools.</li>
+        <li><strong>Sampling controls are ignored</strong> — <code>temperature</code>, <code>top_p</code>, <code>max_tokens</code>, <code>stop</code>, <code>seed</code>, <code>n</code>, … are accepted but have no effect.</li>
+        <li><strong>Usage includes Claude Code's own context</strong>, so <code>prompt_tokens</code> is larger than the text you sent.</li>
+      </ul>
+      <p class="muted">The full list, with what it would take to add each feature, is in <code>docs/missing-features.md</code> in the repository.</p>
+      <p class="muted">Building an agent on this API? <a href="/llms.txt">/llms.txt</a> is a compact brief written for LLMs.</p>
+    </section>
+
+    {% for g in groups %}
+      <section class="tag-group" id="tag-{{ g.name|lower }}">
+        <h2 class="tag-title">{{ g.name }}</h2>
+        {{ g.description }}
+        {% for op in g.ops %}
+          <article class="op" id="{{ op.id }}">
+            <h3 class="op-head"><span class="m m-{{ op.method|lower }}">{{ op.method }}</span> <code class="op-path">{{ op.path }}</code></h3>
+            <div class="op-summary">{{ op.summary }}{% if op.public %} <span class="badge b-ok">no auth</span>{% endif %}</div>
+            <div class="op-grid">
+              <div class="op-text">
+                {{ op.description }}
+
+                {% if op.params %}
+                  <h4>Parameters</h4>
+                  <div class="table-wrap">
+                  <table class="fields">
+                    <thead><tr><th>Name</th><th>In</th><th>Type</th><th>Description</th></tr></thead>
+                    <tbody>
+                    {% for p in op.params %}
+                      <tr>
+                        <td class="fname"><code>{{ p.name }}</code>{% if p.required %} <span class="req">required</span>{% endif %}</td>
+                        <td>{{ p.in }}</td>
+                        <td class="ftype"><code>{{ p.type }}</code></td>
+                        <td>{{ p.description }}{% if p.default is not none %}<div class="enum">Default: <code>{{ p.default }}</code></div>{% endif %}</td>
+                      </tr>
+                    {% endfor %}
+                    </tbody>
+                  </table>
+                  </div>
+                {% endif %}
+
+                {% if op.body %}
+                  <h4>Request body {% if op.body.schema_name %}<a class="muted" href="#schema-{{ op.body.schema_name }}">{{ op.body.schema_name }}</a>{% endif %}</h4>
+                  {{ field_table(op.body.fields) }}
+                {% endif %}
+
+                <h4>Responses</h4>
+                <ul class="responses">
+                {% for r in op.responses %}
+                  <li>
+                    <span class="status {{ 'ok' if r.ok else 'err' }}">{{ r.status }}</span>
+                    <div>{{ r.description }}{% if r.schema %} <span class="muted">→ <code>{{ r.schema }}</code></span>{% endif %}</div>
+                  </li>
+                {% endfor %}
+                </ul>
+              </div>
+
+              <div class="op-examples">
+                {% if op.samples %}
+                  <div class="example-label">Example request</div>
+                  {{ code_tabs(op.samples) }}
+                {% endif %}
+                {% if op.body and op.body.examples %}
+                  <details class="example-more">
+                    <summary>Request body examples</summary>
+                    {{ json_examples(op.body.examples) }}
+                  </details>
+                {% endif %}
+                {% for r in op.responses if r.ok and r.examples %}
+                  <div class="example-label">Response · {{ r.status }}</div>
+                  {{ json_examples(r.examples) }}
+                {% endfor %}
+                {% set errs = op.responses|rejectattr("ok")|selectattr("examples")|list %}
+                {% if errs %}
+                  <details class="example-more">
+                    <summary>Error responses</summary>
+                    {% for r in errs %}
+                      <div class="example-label">{{ r.status }}</div>
+                      {{ json_examples(r.examples) }}
+                    {% endfor %}
+                  </details>
+                {% endif %}
+              </div>
+            </div>
+          </article>
+        {% endfor %}
+      </section>
+    {% endfor %}
+
+    <section id="schemas">
+      <h2 class="tag-title">Schemas</h2>
+      {% for s in schemas %}
+        <article class="schema" id="schema-{{ s.name }}">
+          <h3><code>{{ s.name }}</code> <span class="muted">{{ s.type }}</span></h3>
+          {{ s.description }}
+          {% if s.enum %}<div class="enum">One of: {% for v in s.enum %}<code>{{ v }}</code>{{ ", " if not loop.last }}{% endfor %}</div>{% endif %}
+          {% if s.fields %}{{ field_table(s.fields) }}{% endif %}
+        </article>
+      {% endfor %}
+    </section>
+
+    <footer class="docs-foot muted">
+      Generated from <a href="/openapi.yaml">openapi.yaml</a> (also in the repository as <code>docs/openapi.yaml</code> and <code>docs/openapi.json</code>).
+    </footer>
+  </main>
+</div>
+</body>
+</html>

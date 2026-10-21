@@ -1,0 +1,338 @@
+import json
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app import runtime_settings
+from app.claude_runner import ClaudeError, gate, run_claude
+from app.db import get_db
+from app.models import ApiToken, ChatSession, RequestLog
+from app.openai_schemas import (
+    ChatCompletionRequest,
+    ContentPart,
+    ConversionError,
+    Effort,
+    completion_response,
+    text_of,
+    to_prompt,
+)
+from app.ratelimit import limiter
+from app.request_logs import record_result
+from app.runtime_settings import EFFORTS, effort_rank
+from app.security import APIError, authenticate, display_prefix, extract_token
+from app.sessions import create_session, delete_session, run_turn, session_json
+
+router = APIRouter()
+
+# OpenAI's reasoning_effort values that have no direct Claude Code equivalent.
+_REASONING_EFFORT_ALIASES = {"none": "low", "minimal": "low"}
+
+
+class SessionCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    model: str | None = None
+    effort: Effort | None = None
+    reasoning_effort: str | None = None
+    system_prompt: str | None = None
+    title: str | None = None
+
+
+class SessionMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    content: str | list[ContentPart]
+    model: str | None = None
+    effort: Effort | None = None
+    reasoning_effort: str | None = None
+
+
+# --- shared helpers ----------------------------------------------------------
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+def _resolve_effort(effort: str | None, reasoning_effort: Any, default: str) -> str:
+    if effort:
+        return effort
+    if reasoning_effort:
+        reasoning = _REASONING_EFFORT_ALIASES.get(reasoning_effort, reasoning_effort)
+        if reasoning not in EFFORTS:
+            raise APIError(400, f"Invalid reasoning_effort '{reasoning}'. Use one of: {', '.join(EFFORTS)}.")
+        return reasoning
+    return default
+
+
+def _check_access(token: ApiToken, settings: dict, model: str, effort: str) -> None:
+    if model not in settings["enabled_models"]:
+        raise APIError(
+            400,
+            f"Model '{model}' is not available. Available: {', '.join(settings['enabled_models'])}.",
+            code="model_not_found",
+        )
+    if token.allowed_models and model not in token.allowed_models:
+        raise APIError(403, f"This API key may not use model '{model}'.", "permission_error", "model_not_allowed")
+    if token.max_effort and effort_rank(effort) > effort_rank(token.max_effort):
+        raise APIError(
+            403, f"This API key is limited to effort '{token.max_effort}'.", "permission_error", "effort_not_allowed"
+        )
+
+
+def _check_rate_limit(token: ApiToken, settings: dict) -> None:
+    rpm = token.rate_limit_rpm if token.rate_limit_rpm is not None else settings["default_rate_limit_rpm"]
+    retry_after = limiter.hit(token.id, int(rpm or 0))
+    if retry_after is not None:
+        raise APIError(
+            429, f"Rate limit of {rpm} requests/minute exceeded. Retry in {retry_after:.0f}s.", "rate_limit_error",
+            "rate_limit_exceeded",
+        )  # fmt: skip
+
+
+async def _parse(request: Request, model_cls: type[BaseModel]) -> tuple[Any, dict]:
+    try:
+        raw = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise APIError(400, "Request body must be valid JSON.") from None
+    if not isinstance(raw, dict):
+        raise APIError(400, "Request body must be a JSON object.")
+    try:
+        # reasoning_effort is validated by _resolve_effort, which also maps OpenAI-only values.
+        parsed = model_cls.model_validate({k: v for k, v in raw.items() if k != "reasoning_effort"})
+    except ValidationError as e:
+        raise APIError(400, f"Invalid request: {e.errors(include_url=False)}") from None
+    return parsed, raw
+
+
+def _own_session(db: Session, token: ApiToken, session_id: str) -> ChatSession:
+    session = db.get(ChatSession, session_id)
+    if session is None or session.user_id != token.user_id:
+        raise APIError(404, f"Session '{session_id}' not found.", code="session_not_found")
+    return session
+
+
+Handler = Callable[[ApiToken, dict, RequestLog], Awaitable[dict]]
+
+
+async def _logged(request: Request, db: Session, endpoint: str, handler: Handler, status_code: int = 200):
+    """Authenticate, run `handler`, and write one RequestLog row whatever the outcome."""
+    started = time.monotonic()
+    raw_token = extract_token(request)
+    log = RequestLog(
+        endpoint=endpoint,
+        client_ip=_client_ip(request),
+        token_prefix=display_prefix(raw_token) if raw_token else None,
+        status="error",
+        http_status=500,
+    )
+    settings = runtime_settings.get_all(db)
+    try:
+        token = authenticate(db, raw_token)
+        log.user_id, log.token_id, log.username = token.user_id, token.id, token.user.username
+        return JSONResponse(await handler(token, settings, log), status_code=status_code)
+    except APIError as e:
+        log.status = "rejected" if e.status < 500 else "error"
+        log.http_status, log.error = e.status, e.message
+        return JSONResponse(e.body(), status_code=e.status)
+    except ClaudeError as e:
+        log.status, log.http_status, log.error = "error", e.status, e.message
+        err = APIError(e.status, e.message, "server_error", "upstream_error" if e.status != 504 else "timeout")
+        return JSONResponse(err.body(), status_code=e.status)
+    finally:
+        log.latency_ms = int((time.monotonic() - started) * 1000)
+        db.add(log)
+        db.commit()
+
+
+def _authed(db: Session, request: Request) -> ApiToken:
+    return authenticate(db, extract_token(request))
+
+
+async def _session_turn(
+    db: Session, token: ApiToken, settings: dict, log: RequestLog, session: ChatSession, content: str,
+    model: str, effort: str,
+) -> dict:  # fmt: skip
+    log.chat_session_id = session.id
+    gate.resize(int(settings["max_concurrency"]))
+    result = await run_turn(db, session, content, model=model, effort=effort, settings=settings)
+    record_result(log, result, settings, prompt=content)
+    body = completion_response(
+        completion_id=f"chatcmpl-{uuid.uuid4().hex}",
+        created=int(time.time()),
+        model=model,
+        text=result.text,
+        usage=result.usage,
+    )
+    body["session_id"] = session.id
+    return body
+
+
+# --- chat completions --------------------------------------------------------
+
+
+@router.post("/v1/chat/completions")
+async def chat_completions(request: Request, db: Session = Depends(get_db)):
+    async def handle(token: ApiToken, settings: dict, log: RequestLog) -> dict:
+        req, raw = await _parse(request, ChatCompletionRequest)
+        model = req.model or settings["default_model"]
+        effort = _resolve_effort(req.effort, raw.get("reasoning_effort"), settings["default_effort"])
+        log.model, log.effort = model, effort
+
+        if req.stream:
+            raise APIError(400, "Streaming is not supported by this server; send stream=false.", code="stream_unsupported")
+        _check_access(token, settings, model, effort)
+        _check_rate_limit(token, settings)
+
+        try:
+            system, prompt = to_prompt(req.messages, req.response_format)
+        except ConversionError as e:
+            raise APIError(400, str(e)) from None
+
+        if req.session_id:
+            # Server-side history: only the newest user message is sent.
+            content = text_of(req.messages[-1].content)
+            if req.session_id != "new":
+                session = _own_session(db, token, req.session_id)
+                return await _session_turn(db, token, settings, log, session, content, model, effort)
+            session = create_session(
+                db, user=token.user, model=model, effort=effort, system_prompt=system, token_id=token.id
+            )
+            try:
+                return await _session_turn(db, token, settings, log, session, content, model, effort)
+            except ClaudeError:
+                delete_session(db, session)  # don't leave an empty conversation behind
+                log.chat_session_id = None
+                raise
+
+        system = system or settings["default_system_prompt"]
+        json_schema = None
+        if req.response_format and req.response_format.type == "json_schema":
+            spec = req.response_format.json_schema or {}
+            json_schema = spec.get("schema", spec)
+
+        gate.resize(int(settings["max_concurrency"]))
+        result = await run_claude(
+            prompt,
+            model=model,
+            effort=effort,
+            system_prompt=system,
+            timeout_s=float(settings["request_timeout_s"]),
+            json_schema=json_schema,
+            max_budget_usd=settings["max_budget_usd_per_request"],
+        )
+        record_result(log, result, settings, prompt=f"[system]\n{system}\n\n[prompt]\n{prompt}")
+        return completion_response(
+            completion_id=f"chatcmpl-{result.session_id or uuid.uuid4().hex}",
+            created=int(time.time()),
+            model=model,
+            text=result.text,
+            usage=result.usage,
+        )
+
+    return await _logged(request, db, "chat.completions", handle)
+
+
+# --- sessions ----------------------------------------------------------------
+
+
+@router.post("/v1/sessions")
+async def sessions_create(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = _authed(db, request)
+        req, raw = await _parse(request, SessionCreate)
+        settings = runtime_settings.get_all(db)
+        model = req.model or settings["default_model"]
+        effort = _resolve_effort(req.effort, raw.get("reasoning_effort"), settings["default_effort"])
+        _check_access(token, settings, model, effort)
+        session = create_session(
+            db, user=token.user, model=model, effort=effort, system_prompt=req.system_prompt, title=req.title,
+            token_id=token.id,
+        )  # fmt: skip
+        return JSONResponse(session_json(session), status_code=201)
+    except APIError as e:
+        return JSONResponse(e.body(), status_code=e.status)
+
+
+@router.get("/v1/sessions")
+def sessions_list(request: Request, limit: int = 50, db: Session = Depends(get_db)):
+    try:
+        token = _authed(db, request)
+    except APIError as e:
+        return JSONResponse(e.body(), status_code=e.status)
+    sessions = (
+        db.query(ChatSession)
+        .filter(ChatSession.user_id == token.user_id)
+        .order_by(ChatSession.updated_at.desc())
+        .limit(max(1, min(limit, 200)))
+        .all()
+    )
+    return {"object": "list", "data": [session_json(s) for s in sessions]}
+
+
+@router.get("/v1/sessions/{session_id}")
+def sessions_get(session_id: str, request: Request, db: Session = Depends(get_db)):
+    try:
+        return session_json(_own_session(db, _authed(db, request), session_id), with_messages=True)
+    except APIError as e:
+        return JSONResponse(e.body(), status_code=e.status)
+
+
+@router.delete("/v1/sessions/{session_id}")
+def sessions_delete(session_id: str, request: Request, db: Session = Depends(get_db)):
+    try:
+        session = _own_session(db, _authed(db, request), session_id)
+    except APIError as e:
+        return JSONResponse(e.body(), status_code=e.status)
+    delete_session(db, session)
+    return {"id": session_id, "object": "chat.session.deleted", "deleted": True}
+
+
+@router.post("/v1/sessions/{session_id}/messages")
+async def sessions_message(session_id: str, request: Request, db: Session = Depends(get_db)):
+    async def handle(token: ApiToken, settings: dict, log: RequestLog) -> dict:
+        session = _own_session(db, token, session_id)
+        req, raw = await _parse(request, SessionMessage)
+        model = req.model or session.model
+        effort = _resolve_effort(req.effort, raw.get("reasoning_effort"), session.effort)
+        log.model, log.effort = model, effort
+        _check_access(token, settings, model, effort)
+        _check_rate_limit(token, settings)
+        try:
+            content = text_of(req.content)
+        except ConversionError as e:
+            raise APIError(400, str(e)) from None
+        if not content.strip():
+            raise APIError(400, "Message content is empty.")
+        return await _session_turn(db, token, settings, log, session, content, model, effort)
+
+    return await _logged(request, db, "sessions.messages", handle)
+
+
+# --- misc --------------------------------------------------------------------
+
+
+@router.get("/v1/models")
+def list_models(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = _authed(db, request)
+    except APIError as e:
+        return JSONResponse(e.body(), status_code=e.status)
+    models = runtime_settings.get(db, "enabled_models")
+    if token.allowed_models:
+        models = [m for m in models if m in token.allowed_models]
+    return {
+        "object": "list",
+        "data": [{"id": m, "object": "model", "created": 0, "owned_by": "anthropic"} for m in models],
+    }
+
+
+@router.get("/healthz")
+def healthz(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    return {"status": "ok"}

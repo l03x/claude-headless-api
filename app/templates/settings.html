@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<form method="post" action="/admin/settings">
+  {{ csrf_field() }}
+  <div class="cols">
+    <div class="card">
+      <h2>Models</h2>
+      <div class="field"><label>Enabled models</label><textarea name="enabled_models" rows="9">{{ s.enabled_models|join("\n") }}</textarea>
+        <div class="help">One per line. Aliases (<code>opus</code>, <code>sonnet</code>, <code>haiku</code>, <code>fable</code>) or full ids, passed to <code>claude --model</code>.</div></div>
+      <div class="form-row">
+        <div class="field"><label>Default model</label><input type="text" name="default_model" value="{{ s.default_model }}" required><div class="help">Used when a request omits <code>model</code>.</div></div>
+        <div class="field"><label>Default effort</label><select name="default_effort">{% for e in EFFORTS %}<option {{ 'selected' if s.default_effort == e }}>{{ e }}</option>{% endfor %}</select></div>
+      </div>
+      <div class="field"><label>Default system prompt</label><textarea name="default_system_prompt">{{ s.default_system_prompt }}</textarea>
+        <div class="help">Used when a request has no system message. Replaces Claude Code's agentic system prompt.</div></div>
+    </div>
+    <div class="card">
+      <h2>Limits</h2>
+      <div class="form-row">
+        <div class="field"><label>Request timeout (s)</label><input type="number" min="5" name="request_timeout_s" value="{{ s.request_timeout_s }}"></div>
+        <div class="field"><label>Max concurrent runs</label><input type="number" min="1" name="max_concurrency" value="{{ s.max_concurrency }}"><div class="help">Extra requests wait in a queue.</div></div>
+        <div class="field"><label>Default rate limit (req/min per token)</label><input type="number" min="0" name="default_rate_limit_rpm" value="{{ s.default_rate_limit_rpm }}"><div class="help">0 = unlimited</div></div>
+        <div class="field"><label>Budget cap per request (USD)</label><input type="number" min="0" step="0.01" name="max_budget_usd_per_request" value="{{ s.max_budget_usd_per_request if s.max_budget_usd_per_request is not none else '' }}"><div class="help">Empty = none (<code>--max-budget-usd</code>)</div></div>
+      </div>
+      <h2 style="margin-top:12px">Logging</h2>
+      <div class="field"><label class="check"><input type="checkbox" name="log_bodies" {{ 'checked' if s.log_bodies }}> Log request/response bodies</label><div class="help">Stores prompts and answers in the database. Off by default for privacy.</div></div>
+      <div class="form-row">
+        <div class="field"><label>Log retention (days)</label><input type="number" min="0" name="log_retention_days" value="{{ s.log_retention_days }}"><div class="help">0 = keep forever</div></div>
+        <div class="field"><label>Session retention (days)</label><input type="number" min="0" name="session_retention_days" value="{{ s.session_retention_days }}"><div class="help">Conversations idle this long are deleted. 0 = keep forever</div></div>
+      </div>
+    </div>
+  </div>
+  <button class="primary">Save settings</button>
+</form>
+{% endblock %}

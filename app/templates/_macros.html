@@ -1,0 +1,50 @@
+{% macro csrf_field() %}<input type="hidden" name="csrf_token" value="{{ csrf }}">{% endmacro %}
+
+{% macro badge(value) %}<span class="badge b-{{ value }}">{{ value }}</span>{% endmacro %}
+
+{% macro log_table(logs, show_user=True) %}
+<div class="table-wrap">
+<table>
+  <thead><tr>
+    <th>Time (UTC)</th>{% if show_user %}<th>User</th>{% endif %}<th>Token</th><th>Model</th><th>Effort</th>
+    <th>Status</th><th class="num">Latency</th><th class="num">In / Out tokens</th><th class="num">Cost</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for l in logs %}
+    <tr>
+      <td class="mono">{{ l.created_at|dt }}</td>
+      {% if show_user %}<td>{% if l.user_id %}<a href="/admin/users/{{ l.user_id }}">{{ l.username }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
+      <td class="mono">{{ l.token_prefix or "—" }}</td>
+      <td>{{ l.model or "—" }}</td>
+      <td>{{ l.effort or "—" }}</td>
+      <td>{{ badge(l.status) }} <span class="muted">{{ l.http_status }}</span></td>
+      <td class="num">{{ (l.latency_ms|string + " ms") if l.latency_ms is not none else "—" }}</td>
+      <td class="num">{{ l.input_tokens|num }} / {{ l.output_tokens|num }}</td>
+      <td class="num">{{ l.cost_usd|cost }}</td>
+      <td><a href="/admin/logs/{{ l.id }}">details</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="muted">No requests yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+{% macro token_fields(enabled_models, token=None) %}
+<div class="form-row">
+  <div class="field"><label>Name</label><input type="text" name="name" value="{{ token.name if token else '' }}" placeholder="e.g. laptop, ci-bot" required></div>
+  <div class="field"><label>Expires on</label><input type="date" name="expires_at" value="{{ token.expires_at.date().isoformat() if token and token.expires_at else '' }}"><div class="help">Empty = never expires</div></div>
+  <div class="field"><label>Rate limit (req/min)</label><input type="number" min="0" name="rate_limit_rpm" value="{{ token.rate_limit_rpm if token and token.rate_limit_rpm is not none else '' }}" placeholder="global default"><div class="help">Empty = global default, 0 = unlimited</div></div>
+  <div class="field"><label>Max effort</label>
+    <select name="max_effort"><option value="">no cap</option>
+      {% for e in EFFORTS %}<option value="{{ e }}" {{ 'selected' if token and token.max_effort == e }}>{{ e }}</option>{% endfor %}
+    </select></div>
+</div>
+<div class="field"><label>Allowed models</label>
+  <div class="checks">
+  {% for m in enabled_models %}<label class="check"><input type="checkbox" name="allowed_models" value="{{ m }}" {{ 'checked' if token and m in token.allowed_models }}> {{ m }}</label>{% endfor %}
+  </div>
+  <div class="help">Leave all unchecked to allow every enabled model.</div>
+</div>
+{% endmacro %}

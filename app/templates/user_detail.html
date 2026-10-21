@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, log_table, token_fields, csrf_field with context %}
+{% block title %}{{ user.username }}{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>{{ user.username }} {% if user.is_admin %}{{ badge("admin") }}{% endif %} {{ badge("active" if user.is_active else "disabled") }}</h1>
+  <div class="actions">
+    <a class="btn" href="/admin/logs?user_id={{ user.id }}">View logs</a>
+    <a class="btn" href="/admin/sessions?user_id={{ user.id }}">Sessions ({{ session_count }})</a>
+    {% if user.id != admin.id %}
+    <form class="inline" method="post" action="/admin/users/{{ user.id }}/toggle">{{ csrf_field() }}<button>{{ "Disable" if user.is_active else "Enable" }}</button></form>
+    <form class="inline" method="post" action="/admin/users/{{ user.id }}/delete" data-confirm="Delete {{ user.username }} and all their tokens? Logs are kept.">{{ csrf_field() }}<button class="danger">Delete</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="label">Requests · 30d</div><div class="value">{{ stats.total|num }}</div><div class="sub">{{ stats.ok|num }} successful</div></div>
+  <div class="stat"><div class="label">Cost · 30d</div><div class="value">{{ stats.cost|cost }}</div></div>
+  <div class="stat"><div class="label">Tokens · 30d</div><div class="value">{{ (stats.input_tokens + stats.output_tokens)|num }}</div><div class="sub">{{ stats.input_tokens|num }} in · {{ stats.output_tokens|num }} out</div></div>
+</div>
+
+<div class="card">
+  <h2>API tokens</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Prefix</th><th>Status</th><th>Models</th><th>Limits</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+    {% for t in user.tokens %}
+      <tr>
+        <td><a href="/admin/tokens/{{ t.id }}">{{ t.name }}</a></td>
+        <td class="mono">{{ t.prefix }}…</td>
+        <td>{{ badge(t.status(now)) }}</td>
+        <td>{{ t.allowed_models|join(", ") if t.allowed_models else "all" }}</td>
+        <td>{{ (t.rate_limit_rpm|string + "/min") if t.rate_limit_rpm is not none else "default rpm" }}{% if t.max_effort %} · ≤ {{ t.max_effort }}{% endif %}</td>
+        <td class="mono">{{ t.last_used_at|dt }}</td>
+        <td class="mono">{{ t.expires_at|dt }}</td>
+        <td>
+          <form class="inline" method="post" action="/admin/tokens/{{ t.id }}/revoke">{{ csrf_field() }}<input type="hidden" name="next" value="/admin/users/{{ user.id }}"><button class="small">{{ "Restore" if t.revoked_at else "Revoke" }}</button></form>
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="8" class="muted">No tokens yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <details style="margin-top:14px">
+    <summary><strong>Create a token for {{ user.username }}</strong></summary>
+    <form method="post" action="/admin/tokens" style="margin-top:12px">
+      {{ csrf_field() }}<input type="hidden" name="user_id" value="{{ user.id }}">
+      {{ token_fields(enabled_models) }}
+      <button class="primary">Create token</button>
+    </form>
+  </details>
+</div>
+
+<div class="cols">
+  <div class="card">
+    <h2>Profile</h2>
+    <form method="post" action="/admin/users/{{ user.id }}">
+      {{ csrf_field() }}
+      <div class="field"><label>Username</label><input type="text" name="username" value="{{ user.username }}" required></div>
+      <div class="field"><label>Email</label><input type="email" name="email" value="{{ user.email or '' }}"></div>
+      <div class="field"><label>Notes</label><textarea name="notes">{{ user.notes or '' }}</textarea></div>
+      <div class="actions">
+        <label class="check"><input type="checkbox" name="is_admin" {{ 'checked' if user.is_admin }}> Admin</label>
+        <button class="primary">Save</button>
+      </div>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Dashboard password</h2>
+    <p class="muted">Only admins sign in. Setting a password does not make the user an admin.</p>
+    <form method="post" action="/admin/users/{{ user.id }}/password">
+      {{ csrf_field() }}
+      <div class="field"><label>New password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div>
+      <button>Set password</button>
+    </form>
+    <dl class="kv" style="margin-top:16px"><dt>Created</dt><dd class="mono">{{ user.created_at|dt }} UTC</dd><dt>Password</dt><dd>{{ "set" if user.password_hash else "not set" }}</dd></dl>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Recent requests</h2>
+  {{ log_table(recent, show_user=False) }}
+</div>
+{% endblock %}

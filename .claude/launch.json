@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api-dev",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "SECRET_KEY=dev-only-secret",
+        "ADMIN_USERNAME=admin",
+        "ADMIN_PASSWORD=dev-password",
+        "DATABASE_URL=sqlite:///./dev.db",
+        "CLAUDE_DATA_DIR=./.dev-claude",
+        ".venv/bin/uvicorn", "app.main:app", "--reload", "--port", "8010"
+      ],
+      "port": 8010
+    }
+  ]
+}

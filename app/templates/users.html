@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, csrf_field with context %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>Users</h1>
+  <form method="get" class="filters"><div class="field"><input type="search" name="q" value="{{ q }}" placeholder="Search username or email"></div><button>Search</button></form>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th class="num">Tokens</th><th class="num">Requests · 30d</th><th>Created</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td><a href="/admin/users/{{ u.id }}">{{ u.username }}</a></td>
+        <td>{{ u.email or "—" }}</td>
+        <td>{% if u.is_admin %}{{ badge("admin") }}{% else %}API user{% endif %}</td>
+        <td>{{ badge("active" if u.is_active else "disabled") }}</td>
+        <td class="num">{{ u.tokens|length }}</td>
+        <td class="num">{{ usage.get(u.id, 0)|num }}</td>
+        <td class="mono">{{ u.created_at|dt }}</td>
+      </tr>
+    {% else %}<tr><td colspan="7" class="muted">No users match.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Create user</h2>
+  <form method="post" action="/admin/users">
+    {{ csrf_field() }}
+    <div class="form-row">
+      <div class="field"><label>Username</label><input type="text" name="username" required></div>
+      <div class="field"><label>Email</label><input type="email" name="email"></div>
+      <div class="field"><label>Password</label><input type="password" name="password" autocomplete="new-password"><div class="help">Only needed for admins (dashboard sign-in).</div></div>
+    </div>
+    <div class="field"><label>Notes</label><input type="text" name="notes"></div>
+    <div class="actions">
+      <label class="check"><input type="checkbox" name="is_admin"> Admin (can sign in to this dashboard)</label>
+      <button class="primary">Create user</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

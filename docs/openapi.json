@@ -1,0 +1,1657 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Claude Headless API",
+    "version": "1.0.0",
+    "summary": "OpenAI-compatible LLM API backed by Claude Code's headless mode (`claude -p`).",
+    "description": "Claude Headless API exposes Claude through an **OpenAI-compatible** HTTP interface. Every completion\nis produced by running Claude Code in headless mode (`claude -p`) inside the server's container, so\nany OpenAI SDK works by pointing its `base_url` at this server.\n\n**Highlights**\n\n- Choose the model (`opus`, `sonnet`, `haiku`, `fable` or a full model id) and the effort\n  (`low`, `medium`, `high`, `xhigh`, `max`) on every request.\n- **Sessions** keep a conversation on the server: each turn resumes the same Claude Code session, so you\n  only send the new message.\n- Claude runs with **no tools**: it behaves like a plain text model and cannot run commands or read files.\n\n**Authentication.** Every `/v1` endpoint needs an API token created by an administrator in the dashboard\n(`/admin`). Send it as `Authorization: Bearer <token>` (preferred) or `x-api-key: <token>`. Tokens look\nlike `chk_…`, may expire, may be limited to some models or to a maximum effort, and have a per-minute\nrate limit.\n\n**Errors** use OpenAI's shape — `{\"error\": {\"message\", \"type\", \"param\", \"code\"}}` — see the `Error` schema\nfor every `type` and `code` this server returns.\n\n**Not supported:** streaming (`stream: true`), image or audio input, tool/function calling, `n > 1`,\nand sampling controls (`temperature`, `top_p`, `max_tokens`, `stop`, …), which are accepted and ignored.\nSee `docs/missing-features.md` in the repository for the full list.\n",
+    "license": {
+      "name": "Proprietary"
+    },
+    "contact": {
+      "name": "API administrator"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local deployment (`docker compose up -d`). Replace with your server's address."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "apiKeyHeader": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Chat",
+      "description": "Stateless, OpenAI-compatible chat completions."
+    },
+    {
+      "name": "Sessions",
+      "description": "Conversations kept on the server. The first turn starts a Claude Code session\n(`claude -p --session-id <uuid>`); every later turn resumes it (`claude -p --resume <uuid>`), so Claude\nkeeps the real conversation and its prompt cache. Sessions belong to the **user** who owns the token:\nany of that user's tokens can use them, and nobody else's can. Turns within one session run one at a time.\n"
+    },
+    {
+      "name": "Models",
+      "description": "Models this server lets your token use."
+    },
+    {
+      "name": "Meta",
+      "description": "Health check and this specification. No authentication required."
+    }
+  ],
+  "paths": {
+    "/v1/chat/completions": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "operationId": "createChatCompletion",
+        "summary": "Create a chat completion",
+        "description": "Sends the conversation in `messages` to Claude and returns one assistant reply.\n\n- `system` and `developer` messages are joined into Claude's system prompt. Without one, the server's\n  default system prompt (Settings in the dashboard) is used.\n- Earlier `user`/`assistant` turns are passed to Claude as a transcript ahead of the final user message,\n  which must be the last non-system message.\n- `effort` takes precedence over `reasoning_effort`. Without either, the server default is used.\n- Set `session_id` to keep the conversation on the server instead of re-sending history: `\"new\"` starts a\n  session and the response carries its id; an existing id continues it. With `session_id`, only the\n  **last** user message is sent and `response_format` is ignored.\n\nUnknown OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and\nignored, because `claude -p` has no equivalent. Each call counts towards the token's rate limit and is\nrecorded in the request log.\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              },
+              "examples": {
+                "simple": {
+                  "summary": "One question",
+                  "value": {
+                    "model": "sonnet",
+                    "effort": "low",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "What is the capital of Morocco?"
+                      }
+                    ]
+                  }
+                },
+                "multiTurn": {
+                  "summary": "System prompt and earlier turns",
+                  "value": {
+                    "model": "opus",
+                    "effort": "high",
+                    "messages": [
+                      {
+                        "role": "system",
+                        "content": "You are a concise assistant. Answer in one sentence."
+                      },
+                      {
+                        "role": "user",
+                        "content": "Name a prime number."
+                      },
+                      {
+                        "role": "assistant",
+                        "content": "7 is a prime number."
+                      },
+                      {
+                        "role": "user",
+                        "content": "Name a bigger one."
+                      }
+                    ]
+                  }
+                },
+                "jsonSchema": {
+                  "summary": "Structured output",
+                  "value": {
+                    "model": "haiku",
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "Extract the city and country from \"I live in Rabat, Morocco.\""
+                      }
+                    ],
+                    "response_format": {
+                      "type": "json_schema",
+                      "json_schema": {
+                        "name": "location",
+                        "schema": {
+                          "type": "object",
+                          "properties": {
+                            "city": {
+                              "type": "string"
+                            },
+                            "country": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "city",
+                            "country"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                "startSession": {
+                  "summary": "Start a server-side session",
+                  "value": {
+                    "model": "sonnet",
+                    "session_id": "new",
+                    "messages": [
+                      {
+                        "role": "system",
+                        "content": "You are a helpful tutor."
+                      },
+                      {
+                        "role": "user",
+                        "content": "Let's study fractions. Start with the basics."
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The assistant's reply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletion"
+                },
+                "examples": {
+                  "reply": {
+                    "summary": "Reply",
+                    "value": {
+                      "id": "chatcmpl-6f1d0c7e-2b6a-4c55-9d43-1f8e2a7b9c10",
+                      "object": "chat.completion",
+                      "created": 1792574685,
+                      "model": "sonnet",
+                      "choices": [
+                        {
+                          "index": 0,
+                          "message": {
+                            "role": "assistant",
+                            "content": "The capital of Morocco is Rabat."
+                          },
+                          "finish_reason": "stop",
+                          "logprobs": null
+                        }
+                      ],
+                      "usage": {
+                        "prompt_tokens": 3150,
+                        "completion_tokens": 9,
+                        "total_tokens": 3159,
+                        "prompt_tokens_details": {
+                          "cached_tokens": 3100
+                        }
+                      }
+                    }
+                  },
+                  "sessionReply": {
+                    "summary": "Reply within a session",
+                    "value": {
+                      "id": "chatcmpl-0a6c1b0f6f5d4f0f8d36a3bb2a2c8e51",
+                      "object": "chat.completion",
+                      "created": 1792574701,
+                      "model": "sonnet",
+                      "choices": [
+                        {
+                          "index": 0,
+                          "message": {
+                            "role": "assistant",
+                            "content": "A fraction describes part of a whole…"
+                          },
+                          "finish_reason": "stop",
+                          "logprobs": null
+                        }
+                      ],
+                      "usage": {
+                        "prompt_tokens": 3200,
+                        "completion_tokens": 180,
+                        "total_tokens": 3380,
+                        "prompt_tokens_details": {
+                          "cached_tokens": 3100
+                        }
+                      },
+                      "session_id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SessionNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "502": {
+            "$ref": "#/components/responses/UpstreamError"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/v1/chat/completions \\\n  -H \"Authorization: Bearer $API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sonnet\",\n    \"effort\": \"low\",\n    \"messages\": [\n      {\"role\": \"system\", \"content\": \"Answer in one sentence.\"},\n      {\"role\": \"user\", \"content\": \"What is the capital of Morocco?\"}\n    ]\n  }'\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (openai)",
+            "source": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"http://localhost:8000/v1\", api_key=\"chk_...\")\n\nresponse = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[\n        {\"role\": \"system\", \"content\": \"Answer in one sentence.\"},\n        {\"role\": \"user\", \"content\": \"What is the capital of Morocco?\"},\n    ],\n    reasoning_effort=\"low\",  # or extra_body={\"effort\": \"xhigh\"} for every Claude level\n)\nprint(response.choices[0].message.content)\n\n# Keep the conversation on the server instead of re-sending history:\nfirst = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"Remember the number 42.\"}],\n    extra_body={\"session_id\": \"new\"},\n)\nsession_id = first.model_extra[\"session_id\"]\nagain = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"Which number did I ask you to remember?\"}],\n    extra_body={\"session_id\": session_id},\n)\nprint(again.choices[0].message.content)\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "const res = await fetch(\"http://localhost:8000/v1/chat/completions\", {\n  method: \"POST\",\n  headers: {\n    Authorization: `Bearer ${process.env.API_KEY}`,\n    \"Content-Type\": \"application/json\",\n  },\n  body: JSON.stringify({\n    model: \"sonnet\",\n    effort: \"low\",\n    messages: [{ role: \"user\", content: \"What is the capital of Morocco?\" }],\n  }),\n});\nconst data = await res.json();\nif (!res.ok) throw new Error(data.error.message);\nconsole.log(data.choices[0].message.content);\n"
+          }
+        ]
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "listModels",
+        "summary": "List models",
+        "description": "Lists the models enabled on this server, narrowed to the token's allowed models when the token has\nan allow-list. Ids are passed to `claude --model` as-is: aliases (`opus`, `sonnet`, `haiku`, `fable`)\nalways mean the latest model of that family.\n",
+        "responses": {
+          "200": {
+            "description": "Models your token may use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                },
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {
+                      "id": "opus",
+                      "object": "model",
+                      "created": 0,
+                      "owned_by": "anthropic"
+                    },
+                    {
+                      "id": "sonnet",
+                      "object": "model",
+                      "created": 0,
+                      "owned_by": "anthropic"
+                    },
+                    {
+                      "id": "haiku",
+                      "object": "model",
+                      "created": 0,
+                      "owned_by": "anthropic"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/v1/models \\\n  -H \"Authorization: Bearer $API_KEY\"\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (openai)",
+            "source": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"http://localhost:8000/v1\", api_key=\"chk_...\")\nfor model in client.models.list():\n    print(model.id)\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "const res = await fetch(\"http://localhost:8000/v1/models\", {\n  headers: { Authorization: `Bearer ${process.env.API_KEY}` },\n});\nconst { data } = await res.json();\nconsole.log(data.map((m) => m.id));\n"
+          }
+        ]
+      }
+    },
+    "/v1/sessions": {
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "createSession",
+        "summary": "Create a session",
+        "description": "Creates an empty conversation. Nothing is sent to Claude until the first message. Every field is\noptional: `model` and `effort` default to the server defaults and act as the defaults for each turn;\n`system_prompt` is fixed for the whole conversation (the server default applies when it is omitted);\n`title` defaults to the start of the first message.\n\nThe model and effort are checked against the token's restrictions. Creating a session does not count\ntowards the rate limit.\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCreate"
+              },
+              "example": {
+                "model": "sonnet",
+                "effort": "medium",
+                "system_prompt": "You are a patient maths tutor.",
+                "title": "Fractions practice"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                },
+                "example": {
+                  "id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11",
+                  "object": "chat.session",
+                  "title": "Fractions practice",
+                  "model": "sonnet",
+                  "effort": "medium",
+                  "system_prompt": "You are a patient maths tutor.",
+                  "created_at": 1792574685,
+                  "updated_at": 1792574685,
+                  "message_count": 0,
+                  "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0
+                  },
+                  "total_cost_usd": 0.0
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl -X POST http://localhost:8000/v1/sessions \\\n  -H \"Authorization: Bearer $API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"model\": \"sonnet\", \"system_prompt\": \"You are a patient maths tutor.\"}'\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (requests)",
+            "source": "import requests\n\nBASE = \"http://localhost:8000/v1\"\nHEADERS = {\"Authorization\": \"Bearer chk_...\"}\n\nsession = requests.post(\n    f\"{BASE}/sessions\",\n    json={\"model\": \"sonnet\", \"system_prompt\": \"You are a patient maths tutor.\"},\n    headers=HEADERS,\n).json()\nprint(session[\"id\"])\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "const res = await fetch(\"http://localhost:8000/v1/sessions\", {\n  method: \"POST\",\n  headers: {\n    Authorization: `Bearer ${process.env.API_KEY}`,\n    \"Content-Type\": \"application/json\",\n  },\n  body: JSON.stringify({ model: \"sonnet\", system_prompt: \"You are a patient maths tutor.\" }),\n});\nconst session = await res.json();\nconsole.log(session.id);\n"
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "listSessions",
+        "summary": "List sessions",
+        "description": "Lists the sessions of the user who owns the token, most recently active first. Messages are not included.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of sessions to return. Values outside 1–200 are clamped.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionList"
+                },
+                "example": {
+                  "object": "list",
+                  "data": [
+                    {
+                      "id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11",
+                      "object": "chat.session",
+                      "title": "Fractions practice",
+                      "model": "sonnet",
+                      "effort": "medium",
+                      "system_prompt": "You are a patient maths tutor.",
+                      "created_at": 1792574685,
+                      "updated_at": 1792574990,
+                      "message_count": 4,
+                      "usage": {
+                        "input_tokens": 412,
+                        "output_tokens": 655
+                      },
+                      "total_cost_usd": 0.0187
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl \"http://localhost:8000/v1/sessions?limit=20\" \\\n  -H \"Authorization: Bearer $API_KEY\"\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (requests)",
+            "source": "import requests\n\nsessions = requests.get(\n    \"http://localhost:8000/v1/sessions\",\n    params={\"limit\": 20},\n    headers={\"Authorization\": \"Bearer chk_...\"},\n).json()[\"data\"]\nfor s in sessions:\n    print(s[\"id\"], s[\"title\"], s[\"message_count\"])\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "const res = await fetch(\"http://localhost:8000/v1/sessions?limit=20\", {\n  headers: { Authorization: `Bearer ${process.env.API_KEY}` },\n});\nconst { data } = await res.json();\ndata.forEach((s) => console.log(s.id, s.title));\n"
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/SessionId"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "getSession",
+        "summary": "Get a session",
+        "description": "Returns one session with every message, oldest first. Sessions of other users return `404`.",
+        "responses": {
+          "200": {
+            "description": "The session and its messages.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionWithMessages"
+                },
+                "example": {
+                  "id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11",
+                  "object": "chat.session",
+                  "title": "Fractions practice",
+                  "model": "sonnet",
+                  "effort": "medium",
+                  "system_prompt": "You are a patient maths tutor.",
+                  "created_at": 1792574685,
+                  "updated_at": 1792574701,
+                  "message_count": 2,
+                  "usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 180
+                  },
+                  "total_cost_usd": 0.0061,
+                  "messages": [
+                    {
+                      "role": "user",
+                      "content": "Let's study fractions.",
+                      "created_at": 1792574701
+                    },
+                    {
+                      "role": "assistant",
+                      "content": "A fraction describes part of a whole…",
+                      "created_at": 1792574701
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SessionNotFound"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/v1/sessions/$SESSION_ID \\\n  -H \"Authorization: Bearer $API_KEY\"\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (requests)",
+            "source": "import requests\n\nsession = requests.get(\n    f\"http://localhost:8000/v1/sessions/{session_id}\",\n    headers={\"Authorization\": \"Bearer chk_...\"},\n).json()\nfor message in session[\"messages\"]:\n    print(f\"{message['role']}: {message['content']}\")\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "const res = await fetch(`http://localhost:8000/v1/sessions/${sessionId}`, {\n  headers: { Authorization: `Bearer ${process.env.API_KEY}` },\n});\nconst session = await res.json();\nsession.messages.forEach((m) => console.log(`${m.role}: ${m.content}`));\n"
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "deleteSession",
+        "summary": "Delete a session",
+        "description": "Permanently deletes the session, its stored messages and the Claude Code transcript on the server.",
+        "responses": {
+          "200": {
+            "description": "The session was deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDeleted"
+                },
+                "example": {
+                  "id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11",
+                  "object": "chat.session.deleted",
+                  "deleted": true
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SessionNotFound"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl -X DELETE http://localhost:8000/v1/sessions/$SESSION_ID \\\n  -H \"Authorization: Bearer $API_KEY\"\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (requests)",
+            "source": "import requests\n\nrequests.delete(\n    f\"http://localhost:8000/v1/sessions/{session_id}\",\n    headers={\"Authorization\": \"Bearer chk_...\"},\n).raise_for_status()\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "await fetch(`http://localhost:8000/v1/sessions/${sessionId}`, {\n  method: \"DELETE\",\n  headers: { Authorization: `Bearer ${process.env.API_KEY}` },\n});\n"
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/messages": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/SessionId"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "sendSessionMessage",
+        "summary": "Send a message in a session",
+        "description": "Sends one user message and returns Claude's reply in the `chat.completion` shape, plus `session_id`.\nOnly this message is sent to Claude: the history lives in Claude Code's own transcript, which is\nresumed. `model` and `effort` may change from turn to turn and become the session's new defaults.\n\nBoth the message and the reply are stored and can be read back with `GET /v1/sessions/{session_id}`.\nA failed turn stores nothing, so it can simply be retried. Counts towards the rate limit.\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessage"
+              },
+              "example": {
+                "content": "Now explain how to add 1/3 and 1/4.",
+                "effort": "high"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Claude's reply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletion"
+                },
+                "example": {
+                  "id": "chatcmpl-5e0f3b9a0c2d4a1e9b7f6c5d4e3f2a1b",
+                  "object": "chat.completion",
+                  "created": 1792574760,
+                  "model": "sonnet",
+                  "choices": [
+                    {
+                      "index": 0,
+                      "message": {
+                        "role": "assistant",
+                        "content": "Find a common denominator: 1/3 = 4/12 and 1/4 = 3/12, so the sum is 7/12."
+                      },
+                      "finish_reason": "stop",
+                      "logprobs": null
+                    }
+                  ],
+                  "usage": {
+                    "prompt_tokens": 3480,
+                    "completion_tokens": 42,
+                    "total_tokens": 3522,
+                    "prompt_tokens_details": {
+                      "cached_tokens": 3400
+                    }
+                  },
+                  "session_id": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/SessionNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "502": {
+            "$ref": "#/components/responses/UpstreamError"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl -X POST http://localhost:8000/v1/sessions/$SESSION_ID/messages \\\n  -H \"Authorization: Bearer $API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"content\": \"Now explain how to add 1/3 and 1/4.\"}'\n"
+          },
+          {
+            "lang": "python",
+            "label": "Python (requests)",
+            "source": "import requests\n\nBASE = \"http://localhost:8000/v1\"\nHEADERS = {\"Authorization\": \"Bearer chk_...\"}\n\nsession_id = requests.post(f\"{BASE}/sessions\", json={\"model\": \"sonnet\"}, headers=HEADERS).json()[\"id\"]\n\ndef say(text: str) -> str:\n    r = requests.post(f\"{BASE}/sessions/{session_id}/messages\", json={\"content\": text}, headers=HEADERS)\n    r.raise_for_status()\n    return r.json()[\"choices\"][0][\"message\"][\"content\"]\n\nprint(say(\"Remember the number 42.\"))\nprint(say(\"Which number did I ask you to remember?\"))\n"
+          },
+          {
+            "lang": "javascript",
+            "label": "JavaScript (fetch)",
+            "source": "const BASE = \"http://localhost:8000/v1\";\nconst headers = {\n  Authorization: `Bearer ${process.env.API_KEY}`,\n  \"Content-Type\": \"application/json\",\n};\n\nasync function say(sessionId, content) {\n  const res = await fetch(`${BASE}/sessions/${sessionId}/messages`, {\n    method: \"POST\",\n    headers,\n    body: JSON.stringify({ content }),\n  });\n  const data = await res.json();\n  if (!res.ok) throw new Error(data.error.message);\n  return data.choices[0].message.content;\n}\n\nconst { id } = await (await fetch(`${BASE}/sessions`, { method: \"POST\", headers, body: \"{}\" })).json();\nconsole.log(await say(id, \"Remember the number 42.\"));\nconsole.log(await say(id, \"Which number did I ask you to remember?\"));\n"
+          }
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "Meta"
+        ],
+        "operationId": "healthCheck",
+        "summary": "Health check",
+        "description": "Returns `200` when the server is up and its database answers. Used by the container health check.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The service is healthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "ok"
+                    }
+                  }
+                },
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/healthz"
+          }
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "Meta"
+        ],
+        "operationId": "getOpenApiJson",
+        "summary": "This specification (JSON)",
+        "description": "Returns this OpenAPI document as JSON. The same file is `docs/openapi.json` in the repository.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/openapi.json -o openapi.json"
+          }
+        ]
+      }
+    },
+    "/openapi.yaml": {
+      "get": {
+        "tags": [
+          "Meta"
+        ],
+        "operationId": "getOpenApiYaml",
+        "summary": "This specification (YAML)",
+        "description": "Returns this OpenAPI document as YAML. The same file is `docs/openapi.yaml` in the repository.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 document.",
+            "content": {
+              "application/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/openapi.yaml -o openapi.yaml"
+          }
+        ]
+      }
+    },
+    "/llms.txt": {
+      "get": {
+        "tags": [
+          "Meta"
+        ],
+        "operationId": "getLlmsTxt",
+        "summary": "Guide for AI agents (llms.txt)",
+        "description": "A compact Markdown brief for LLM agents that call this API: authentication, choosing a model and effort,\nstateless calls vs sessions, and a retry policy for every error code. It follows the `llms.txt`\nconvention and is the same text as `docs/agent-api-guide.md`, with this server's address filled in.\n",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The guide, as Markdown.",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl http://localhost:8000/llms.txt"
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "chk_<43 url-safe characters>",
+        "description": "API token created in the admin dashboard, sent as `Authorization: Bearer chk_…`. The token is shown\nonce when it is created; the server stores only its hash.\n"
+      },
+      "apiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "The same API token, for clients that cannot set an `Authorization` header."
+      }
+    },
+    "parameters": {
+      "SessionId": {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "description": "The session id returned when the session was created.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "example": "0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11"
+      }
+    },
+    "schemas": {
+      "Effort": {
+        "type": "string",
+        "description": "How much effort Claude spends, passed to `claude --effort`. Higher effort thinks longer and costs\nmore. A token may be capped at a maximum effort.\n",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "example": "medium"
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "description": "OpenAI's `reasoning_effort`, accepted for SDK compatibility. `none` and `minimal` map to `low`; the\nother values map to the Claude effort of the same name. Ignored when `effort` is set.\n",
+        "enum": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "ContentPart": {
+        "type": "object",
+        "description": "One part of a multi-part message. Only `text` parts are supported; any other type is rejected with `400`.",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Must be `text`.",
+            "example": "text"
+          },
+          "text": {
+            "type": "string",
+            "description": "The text of this part."
+          }
+        },
+        "additionalProperties": true
+      },
+      "MessageContent": {
+        "description": "Message text, either as a string or as an array of text parts (joined with newlines).",
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentPart"
+            }
+          }
+        ]
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "`system` and `developer` messages form the system prompt; `user` and `assistant` messages form the\nconversation. `tool` and `function` messages are rejected because tools are disabled.\n",
+            "enum": [
+              "system",
+              "developer",
+              "user",
+              "assistant",
+              "tool",
+              "function"
+            ]
+          },
+          "content": {
+            "$ref": "#/components/schemas/MessageContent"
+          },
+          "name": {
+            "type": "string",
+            "description": "Accepted for compatibility and ignored."
+          }
+        },
+        "additionalProperties": true
+      },
+      "ResponseFormat": {
+        "type": "object",
+        "description": "`text` (default) returns free text. `json_object` adds an instruction to answer with a single JSON\nobject. `json_schema` passes `json_schema.schema` to `claude --json-schema` for structured output;\nthe reply's `content` is then the JSON document as a string.\n",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json_object",
+              "json_schema"
+            ],
+            "default": "text"
+          },
+          "json_schema": {
+            "type": "object",
+            "description": "OpenAI's wrapper: `{name, schema, strict}`. Only `schema` is used.",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "schema": {
+                "type": "object",
+                "description": "A JSON Schema the reply must satisfy."
+              },
+              "strict": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "additionalProperties": true
+      },
+      "ChatCompletionRequest": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model alias (`opus`, `sonnet`, `haiku`, `fable`) or full model id. Must be enabled on the server and\nallowed for the token. Defaults to the server's default model.\n",
+            "example": "sonnet"
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The conversation so far. The last non-system message must have role `user`.",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "reasoning_effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "response_format": {
+            "$ref": "#/components/schemas/ResponseFormat"
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "Must be `false` or omitted; streaming is not supported and `true` returns `400` (`stream_unsupported`)."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Extension. `\"new\"` starts a server-side session; an existing session id continues it. With a session,\nonly the last user message is sent and the response includes `session_id`. See the Sessions endpoints.\n",
+            "example": "new"
+          },
+          "user": {
+            "type": "string",
+            "description": "Accepted for compatibility and ignored."
+          }
+        },
+        "additionalProperties": {
+          "description": "Other OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and ignored."
+        }
+      },
+      "ChatCompletion": {
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique id of this completion.",
+            "example": "chatcmpl-6f1d0c7e-2b6a-4c55-9d43-1f8e2a7b9c10"
+          },
+          "object": {
+            "type": "string",
+            "const": "chat.completion"
+          },
+          "created": {
+            "type": "integer",
+            "description": "Unix time (seconds) the reply was produced."
+          },
+          "model": {
+            "type": "string",
+            "description": "The model used, as requested."
+          },
+          "choices": {
+            "type": "array",
+            "description": "Always exactly one choice.",
+            "items": {
+              "type": "object",
+              "required": [
+                "index",
+                "message",
+                "finish_reason"
+              ],
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "const": 0
+                },
+                "message": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content"
+                  ],
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "const": "assistant"
+                    },
+                    "content": {
+                      "type": "string",
+                      "description": "The reply text (a JSON string when `response_format` is `json_schema`)."
+                    }
+                  }
+                },
+                "finish_reason": {
+                  "type": "string",
+                  "const": "stop",
+                  "description": "Always `stop`."
+                },
+                "logprobs": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Present only when the reply belongs to a session."
+          }
+        }
+      },
+      "Usage": {
+        "type": "object",
+        "description": "Token counts reported by Claude Code. `prompt_tokens` includes cached input, and Claude Code's own\nsystem prompt and context count towards it, so it is larger than the text you sent.\n",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "description": "Input tokens, including cache reads and cache writes."
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "description": "Output tokens."
+          },
+          "total_tokens": {
+            "type": "integer",
+            "description": "`prompt_tokens + completion_tokens`."
+          },
+          "prompt_tokens_details": {
+            "type": "object",
+            "properties": {
+              "cached_tokens": {
+                "type": "integer",
+                "description": "Input tokens served from Claude's prompt cache."
+              }
+            }
+          }
+        }
+      },
+      "Model": {
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "owned_by"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Value to pass as `model`.",
+            "example": "sonnet"
+          },
+          "object": {
+            "type": "string",
+            "const": "model"
+          },
+          "created": {
+            "type": "integer",
+            "description": "Always `0`; aliases have no fixed release date."
+          },
+          "owned_by": {
+            "type": "string",
+            "const": "anthropic"
+          }
+        }
+      },
+      "ModelList": {
+        "type": "object",
+        "required": [
+          "object",
+          "data"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          }
+        }
+      },
+      "SessionCreate": {
+        "type": "object",
+        "description": "All fields are optional; send `{}` for a session with server defaults.",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Default model for the session's turns. Defaults to the server's default model.",
+            "example": "sonnet"
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "reasoning_effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "system_prompt": {
+            "type": "string",
+            "description": "System prompt for the whole conversation. Cannot be changed later. Defaults to the server's default system prompt."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "Display title. Defaults to the start of the first message."
+          }
+        },
+        "additionalProperties": true
+      },
+      "SessionMessage": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/MessageContent"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model for this turn. Defaults to the session's current model."
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "reasoning_effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          }
+        },
+        "additionalProperties": true
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "title",
+          "model",
+          "effort",
+          "system_prompt",
+          "created_at",
+          "updated_at",
+          "message_count",
+          "usage",
+          "total_cost_usd"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Session id, used in the session URLs."
+          },
+          "object": {
+            "type": "string",
+            "const": "chat.session"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display title; `null` until set or until the first message."
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used by the latest turn, and the default for the next one."
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The session's system prompt; `null` means the server default."
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix time (seconds) the session was created."
+          },
+          "updated_at": {
+            "type": "integer",
+            "description": "Unix time (seconds) of the latest turn."
+          },
+          "message_count": {
+            "type": "integer",
+            "description": "Number of stored messages (two per turn)."
+          },
+          "usage": {
+            "type": "object",
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ],
+            "properties": {
+              "input_tokens": {
+                "type": "integer",
+                "description": "Uncached input tokens summed over all turns."
+              },
+              "output_tokens": {
+                "type": "integer",
+                "description": "Output tokens summed over all turns."
+              }
+            }
+          },
+          "total_cost_usd": {
+            "type": "number",
+            "description": "Cost reported by Claude Code, summed over all turns."
+          }
+        }
+      },
+      "SessionWithMessages": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Session"
+          },
+          {
+            "type": "object",
+            "required": [
+              "messages"
+            ],
+            "properties": {
+              "messages": {
+                "type": "array",
+                "description": "Every message, oldest first.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "content",
+                    "created_at"
+                  ],
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "description": "Unix time (seconds)."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SessionList": {
+        "type": "object",
+        "required": [
+          "object",
+          "data"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          }
+        }
+      },
+      "SessionDeleted": {
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "deleted"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "object": {
+            "type": "string",
+            "const": "chat.session.deleted"
+          },
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "message",
+              "type",
+              "param",
+              "code"
+            ],
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "Human-readable explanation."
+              },
+              "type": {
+                "type": "string",
+                "description": "Error category.",
+                "enum": [
+                  "invalid_request_error",
+                  "authentication_error",
+                  "permission_error",
+                  "rate_limit_error",
+                  "server_error"
+                ]
+              },
+              "param": {
+                "type": "null",
+                "description": "Always `null`; kept for OpenAI compatibility."
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Machine-readable reason:\n\n- `missing_api_key`, `invalid_api_key`, `api_key_revoked`, `api_key_expired` — 401\n- `user_disabled`, `model_not_allowed`, `effort_not_allowed` — 403\n- `model_not_found`, `stream_unsupported` — 400 (other 400s have `null`)\n- `session_not_found` — 404\n- `rate_limit_exceeded` — 429\n- `upstream_error` — 500/502, `timeout` — 504\n"
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "The request is malformed or asks for something this server does not support.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "unknownModel": {
+                "summary": "Model not enabled",
+                "value": {
+                  "error": {
+                    "message": "Model 'gpt-4' is not available. Available: opus, sonnet, haiku.",
+                    "type": "invalid_request_error",
+                    "param": null,
+                    "code": "model_not_found"
+                  }
+                }
+              },
+              "streaming": {
+                "summary": "Streaming requested",
+                "value": {
+                  "error": {
+                    "message": "Streaming is not supported by this server; send stream=false.",
+                    "type": "invalid_request_error",
+                    "param": null,
+                    "code": "stream_unsupported"
+                  }
+                }
+              },
+              "imagePart": {
+                "summary": "Unsupported content",
+                "value": {
+                  "error": {
+                    "message": "Content part type 'image_url' is not supported; only text is.",
+                    "type": "invalid_request_error",
+                    "param": null,
+                    "code": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "The API token is missing, unknown, revoked or expired.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "Invalid API key.",
+                "type": "authentication_error",
+                "param": null,
+                "code": "invalid_api_key"
+              }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The token's user is disabled, or the token may not use this model or effort.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "This API key may not use model 'opus'.",
+                "type": "permission_error",
+                "param": null,
+                "code": "model_not_allowed"
+              }
+            }
+          }
+        }
+      },
+      "SessionNotFound": {
+        "description": "No session with this id belongs to the token's user.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "Session '0b8f2a52-0d0e-4a0e-9e2f-1d6f6a3c2b11' not found.",
+                "type": "invalid_request_error",
+                "param": null,
+                "code": "session_not_found"
+              }
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "The token sent more requests in the last minute than its limit allows.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "Rate limit of 60 requests/minute exceeded. Retry in 12s.",
+                "type": "rate_limit_error",
+                "param": null,
+                "code": "rate_limit_exceeded"
+              }
+            }
+          }
+        }
+      },
+      "ServerError": {
+        "description": "The server could not start the Claude CLI (misconfigured installation).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "Claude CLI not found: claude",
+                "type": "server_error",
+                "param": null,
+                "code": "upstream_error"
+              }
+            }
+          }
+        }
+      },
+      "UpstreamError": {
+        "description": "Claude Code ran but failed — for example it is not logged in, the model is unknown, or the budget cap was hit.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "Claude CLI error: Not logged in · Please run /login",
+                "type": "server_error",
+                "param": null,
+                "code": "upstream_error"
+              }
+            }
+          }
+        }
+      },
+      "Timeout": {
+        "description": "Claude did not answer within the server's request timeout; the run was stopped.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "message": "Claude did not answer within 300s.",
+                "type": "server_error",
+                "param": null,
+                "code": "timeout"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

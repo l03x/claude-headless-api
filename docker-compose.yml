@@ -1,0 +1,17 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.281}
+    image: claude-headless-api:latest
+    container_name: claude-headless-api
+    env_file: .env
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - claude-api-data:/data
+    restart: unless-stopped
+
+volumes:
+  claude-api-data:

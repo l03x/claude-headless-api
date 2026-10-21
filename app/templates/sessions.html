@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+{% block title %}Sessions{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>Sessions <span class="muted" style="font-weight:400;font-size:14px">{{ total|num }} conversations</span></h1>
+  <form method="get" class="filters">
+    <div class="field"><input type="search" name="q" value="{{ q }}" placeholder="Search titles"></div>
+    <div class="field"><select name="user_id"><option value="">All users</option>{% for u in users %}<option value="{{ u.id }}" {{ 'selected' if user_id == u.id }}>{{ u.username }}</option>{% endfor %}</select></div>
+    <div class="field"><select name="source"><option value="">Any source</option>{% for s in ["api","dashboard"] %}<option {{ 'selected' if source == s }}>{{ s }}</option>{% endfor %}</select></div>
+    <button>Filter</button>
+  </form>
+</div>
+<div class="card">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Title</th><th>User</th><th>Source</th><th>Model</th><th class="num">Turns</th><th class="num">Tokens in / out</th><th class="num">Cost</th><th>Last active (UTC)</th><th></th></tr></thead>
+    <tbody>
+    {% for s in sessions %}
+      <tr>
+        <td style="min-width:220px"><a href="/admin/sessions/{{ s.id }}">{{ s.title or "Untitled" }}</a></td>
+        <td><a href="/admin/users/{{ s.user_id }}">{{ s.user.username }}</a></td>
+        <td>{{ s.source }}</td>
+        <td>{{ s.model }} · {{ s.effort }}</td>
+        <td class="num">{{ s.message_count // 2 }}</td>
+        <td class="num">{{ s.input_tokens|num }} / {{ s.output_tokens|num }}</td>
+        <td class="num">{{ s.total_cost_usd|cost }}</td>
+        <td class="mono">{{ s.updated_at|dt }}</td>
+        <td><form class="inline" method="post" action="/admin/sessions/{{ s.id }}/delete" data-confirm="Delete this conversation and its Claude transcript?">{{ csrf_field() }}<button class="small danger">Delete</button></form></td>
+      </tr>
+    {% else %}<tr><td colspan="9" class="muted">No conversations yet. Start one from <a href="/admin/chat">Chat</a> or the <code>/v1/sessions</code> API.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="pager">
+    {% if page > 1 %}<a class="btn small" href="?{{ query_string ~ '&' if query_string }}page={{ page - 1 }}">← Newer</a>{% endif %}
+    <span class="muted">Page {{ page }} / {{ pages }}</span>
+    {% if page < pages %}<a class="btn small" href="?{{ query_string ~ '&' if query_string }}page={{ page + 1 }}">Older →</a>{% endif %}
+  </div>
+</div>
+<p class="muted">Idle conversations are {% if retention %}deleted after {{ retention }} days{% else %}kept forever{% endif %} (Settings → Session retention).</p>
+{% endblock %}

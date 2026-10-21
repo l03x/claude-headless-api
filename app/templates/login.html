@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block bare %}
+<div class="login">
+  <h1>Claude Headless API</h1>
+  {% for kind, msg in messages %}<div class="flash {{ kind }}">{{ msg }}</div>{% endfor %}
+  <form method="post" action="/admin/login" class="card">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <div class="field"><label for="u">Username</label><input id="u" type="text" name="username" autocomplete="username" required autofocus></div>
+    <div class="field"><label for="p">Password</label><input id="p" type="password" name="password" autocomplete="current-password" required></div>
+    <button class="primary" style="width:100%">Sign in</button>
+  </form>
+  <div style="text-align:center">{% include "_theme_switch.html" %}</div>
+</div>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+{% block title %}System{% endblock %}
+{% block content %}
+<h1>System</h1>
+<div class="cols">
+  <div class="card">
+    <h2>Runtime</h2>
+    <dl class="kv">
+      <dt>Claude CLI</dt><dd class="mono">{{ claude_bin }} — {{ version }}</dd>
+      <dt>CLAUDE_CODE_OAUTH_TOKEN</dt><dd class="mono">{{ oauth }}</dd>
+      <dt>ANTHROPIC_API_KEY</dt><dd class="mono">{{ api_key }}</dd>
+      <dt>Database</dt><dd class="mono">{{ database_url }}</dd>
+      <dt>Concurrency</dt><dd>{{ gate.in_flight }} running · {{ gate.queued }} queued · limit {{ gate.limit }}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h2>Test Claude</h2>
+    <form method="post" action="/admin/system/test">
+      {{ csrf_field() }}
+      <div class="form-row">
+        <div class="field"><label>Model</label><select name="model">{% for m in enabled_models %}<option {{ 'selected' if (test and test.model == m) or (not test and m == 'haiku') }}>{{ m }}</option>{% endfor %}</select></div>
+        <div class="field"><label>Effort</label><select name="effort">{% for e in EFFORTS %}<option {{ 'selected' if (test and test.effort == e) or (not test and e == 'low') }}>{{ e }}</option>{% endfor %}</select></div>
+      </div>
+      <div class="field"><label>Prompt</label><input type="text" name="prompt" value="{{ test.prompt if test else 'Reply with exactly: pong' }}"></div>
+      <button class="primary">Run</button>
+    </form>
+  </div>
+</div>
+{% if test %}
+<div class="card">
+  <h2>Result {% if test.ok %}<span class="badge b-ok">ok</span>{% else %}<span class="badge b-error">error</span>{% endif %} <span class="muted" style="font-weight:400">{{ test.latency_ms }} ms{% if test.cost is not none %} · {{ test.cost|cost }}{% endif %}</span></h2>
+  <pre>{{ test.text }}</pre>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Token created{% endblock %}
+{% block content %}
+<h1>Token created</h1>
+<div class="card">
+  <p>New token <strong>{{ token.name }}</strong> for <a href="/admin/users/{{ user.id }}">{{ user.username }}</a>.
+     <strong>Copy it now — it is stored hashed and will not be shown again.</strong></p>
+  <div class="secret"><code id="new-token">{{ raw }}</code><button class="primary" data-copy="#new-token">Copy</button></div>
+</div>
+<div class="card">
+  <h2>Try it</h2>
+<pre>curl {{ request.base_url }}v1/chat/completions \
+  -H "Authorization: Bearer {{ raw }}" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "sonnet", "effort": "low", "messages": [{"role": "user", "content": "Hello!"}]}'</pre>
+</div>
+<div class="actions"><a class="btn" href="/admin/tokens/{{ token.id }}">Token settings</a><a class="btn" href="/admin/users/{{ user.id }}">Back to {{ user.username }}</a></div>
+{% endblock %}

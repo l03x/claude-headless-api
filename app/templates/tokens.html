@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, token_fields, csrf_field with context %}
+{% block title %}API tokens{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>API tokens</h1>
+  <form method="get" class="filters">
+    <div class="field"><select name="user_id"><option value="">All users</option>{% for u in users %}<option value="{{ u.id }}" {{ 'selected' if user_id == u.id }}>{{ u.username }}</option>{% endfor %}</select></div>
+    <div class="field"><select name="status"><option value="">Any status</option>{% for s in ["active","revoked","expired"] %}<option {{ 'selected' if status == s }}>{{ s }}</option>{% endfor %}</select></div>
+    <button>Filter</button>
+  </form>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>User</th><th>Prefix</th><th>Status</th><th>Models</th><th>Limits</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+    {% for t in tokens %}
+      <tr>
+        <td><a href="/admin/tokens/{{ t.id }}">{{ t.name }}</a></td>
+        <td><a href="/admin/users/{{ t.user_id }}">{{ t.user.username }}</a></td>
+        <td class="mono">{{ t.prefix }}…</td>
+        <td>{{ badge(t.status(now)) }}</td>
+        <td>{{ t.allowed_models|join(", ") if t.allowed_models else "all" }}</td>
+        <td>{{ (t.rate_limit_rpm|string + "/min") if t.rate_limit_rpm is not none else "default" }}{% if t.max_effort %} · ≤ {{ t.max_effort }}{% endif %}</td>
+        <td class="mono">{{ t.created_at|dt }}</td>
+        <td class="mono">{{ t.last_used_at|dt }}</td>
+        <td class="mono">{{ t.expires_at|dt }}</td>
+        <td><form class="inline" method="post" action="/admin/tokens/{{ t.id }}/revoke">{{ csrf_field() }}<input type="hidden" name="next" value="/admin/tokens"><button class="small">{{ "Restore" if t.revoked_at else "Revoke" }}</button></form></td>
+      </tr>
+    {% else %}<tr><td colspan="10" class="muted">No tokens match.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Create token</h2>
+  {% if users %}
+  <form method="post" action="/admin/tokens">
+    {{ csrf_field() }}
+    <div class="field" style="max-width:320px"><label>User</label>
+      <select name="user_id" required>{% for u in users %}<option value="{{ u.id }}" {{ 'selected' if user_id == u.id }}>{{ u.username }}</option>{% endfor %}</select>
+    </div>
+    {{ token_fields(enabled_models) }}
+    <button class="primary">Create token</button>
+  </form>
+  {% else %}<p class="muted">Create a user first.</p>{% endif %}
+</div>
+{% endblock %}

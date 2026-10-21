@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import log_table, csrf_field with context %}
+{% block title %}Logs{% endblock %}
+{% block content %}
+<div class="head">
+  <h1>Request logs <span class="muted" style="font-weight:400;font-size:14px">{{ total|num }} entries</span></h1>
+  <a class="btn" href="/admin/logs/export.csv{{ '?' + query_string if query_string }}">Export CSV</a>
+</div>
+<div class="card">
+  <form method="get" class="filters">
+    <div class="field"><label>User</label><select name="user_id"><option value="">All</option>{% for u in users %}<option value="{{ u.id }}" {{ 'selected' if params.user_id == u.id|string }}>{{ u.username }}</option>{% endfor %}</select></div>
+    <div class="field"><label>Token id</label><input type="number" name="token_id" value="{{ params.token_id }}"></div>
+    <div class="field"><label>Model</label><select name="model"><option value="">All</option>{% for m in models %}<option {{ 'selected' if params.model == m }}>{{ m }}</option>{% endfor %}</select></div>
+    <div class="field"><label>Status</label><select name="status"><option value="">All</option>{% for s in ["ok","error","rejected"] %}<option {{ 'selected' if params.status == s }}>{{ s }}</option>{% endfor %}</select></div>
+    <div class="field"><label>From</label><input type="date" name="date_from" value="{{ params.date_from }}"></div>
+    <div class="field"><label>To</label><input type="date" name="date_to" value="{{ params.date_to }}"></div>
+    <button>Filter</button>
+    <a class="btn" href="/admin/logs">Reset</a>
+  </form>
+</div>
+<div class="card">
+  {{ log_table(logs) }}
+  <div class="pager">
+    {% if page > 1 %}<a class="btn small" href="?{{ query_string ~ '&' if query_string }}page={{ page - 1 }}">← Newer</a>{% endif %}
+    <span class="muted">Page {{ page }} / {{ pages }}</span>
+    {% if page < pages %}<a class="btn small" href="?{{ query_string ~ '&' if query_string }}page={{ page + 1 }}">Older →</a>{% endif %}
+  </div>
+</div>
+<div class="card">
+  <h2>Purge</h2>
+  <p class="muted">Logs older than {{ retention }} days are purged automatically ({{ "disabled" if not retention else "change on the Settings page" }}).</p>
+  <form method="post" action="/admin/logs/purge" class="filters" data-confirm="Permanently delete these log entries?">
+    {{ csrf_field() }}
+    <div class="field"><label>Delete entries older than (days)</label><input type="number" min="0" name="older_than_days" value="{{ retention or 30 }}"></div>
+    <button class="danger">Purge</button>
+  </form>
+</div>
+{% endblock %}
