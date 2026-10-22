@@ -5,6 +5,7 @@
 ![SQLAlchemy](https://img.shields.io/badge/sqlalchemy-%23D71F00.svg?style=for-the-badge&logo=sqlalchemy&logoColor=white)
 ![SQLite](https://img.shields.io/badge/sqlite-%2307405e.svg?style=for-the-badge&logo=sqlite&logoColor=white)
 ![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)
+
 An OpenAI-compatible LLM API backed by Claude Code's headless mode (`claude -p`), with API-token auth,
 server-side sessions and an admin dashboard. One Docker container.
 
