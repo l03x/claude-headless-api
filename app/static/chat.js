@@ -107,7 +107,8 @@
 
   const fmtMeta = (m) => {
     const cost = m.cost_usd != null ? `$${m.cost_usd.toFixed(4)}` : "—";
-    return `${m.model} · ${m.effort} · ${m.input_tokens ?? "—"} in / ${m.output_tokens ?? "—"} out · ${cost} · ${(m.latency_ms / 1000).toFixed(1)}s`;
+    const searches = m.web_searches ? ` · ${m.web_searches} search${m.web_searches === 1 ? "" : "es"}` : "";
+    return `${m.model} · ${m.effort} · ${m.input_tokens ?? "—"} in / ${m.output_tokens ?? "—"} out · ${cost}${searches} · ${(m.latency_ms / 1000).toFixed(1)}s`;
   };
 
   async function send() {
@@ -115,6 +116,7 @@
     if (!content || sendBtn.disabled) return;
     const model = document.getElementById("model").value;
     const effort = document.getElementById("effort").value;
+    const webSearch = document.getElementById("web-search")?.checked ? "1" : "";
     sendBtn.disabled = true;
     input.value = "";
     addMessage("user", content);
@@ -130,7 +132,7 @@
         history.replaceState(null, "", `/admin/chat/${sessionId}`);
       }
       const bubble = pending.querySelector(".bubble");
-      const data = await sendStreaming(`/admin/chat/${sessionId}/send`, { content, model, effort }, (delta) => {
+      const data = await sendStreaming(`/admin/chat/${sessionId}/send`, { content, model, effort, web_search: webSearch }, (delta) => {
         if (!reply) {
           pending.classList.remove("pending");
           status.textContent = "Claude is writing…";

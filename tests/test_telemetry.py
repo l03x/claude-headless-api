@@ -120,6 +120,22 @@ def test_metrics_and_logs(otel, make_token):
     assert ok.attributes["cost_usd"] == pytest.approx(0.0123) and ok.attributes["token_prefix"].startswith("chk_")
 
 
+def test_web_search_counted(otel, make_token, db):
+    from app import runtime_settings
+
+    c, spans, reader, logs = otel
+    runtime_settings.set_many(db, {"web_search_enabled": True})
+    raw, _ = make_token()
+    body = {"model": "haiku", "messages": [{"role": "user", "content": SECRET}], "web_search_options": {}}
+    assert c.post("/v1/chat/completions", json=body, headers=H(raw)).status_code == 200
+    assert [p.value for p in metric_points(reader, "claude.web_searches")] == [1]
+    chat = next(s for s in finished(spans) if s.name == "chat haiku")
+    assert chat.attributes["claude.web_searches"] == 1
+    record = next(e.log_record for e in logs.get_finished_logs()
+                  if e.log_record.attributes and e.log_record.attributes.get("endpoint") == "chat.completions")  # fmt: skip
+    assert record.attributes["web_searches"] == 1
+
+
 def test_failed_run_marks_span_error(otel, make_token, monkeypatch):
     c, spans, reader, _ = otel
     raw, _ = make_token()

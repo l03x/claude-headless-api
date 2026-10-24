@@ -31,6 +31,13 @@ class StreamOptions(BaseModel):
     include_usage: bool = False
 
 
+class WebSearchOptions(BaseModel):
+    # OpenAI's fields are accepted and ignored: Claude decides how much to search and what to ask.
+    model_config = ConfigDict(extra="allow")
+    search_context_size: Literal["low", "medium", "high"] | None = None
+    user_location: dict[str, Any] | None = None
+
+
 class ChatCompletionRequest(BaseModel):
     # Unknown OpenAI params (temperature, top_p, max_tokens, ...) are accepted and ignored:
     # `claude -p` exposes no equivalent.
@@ -44,6 +51,8 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     stream_options: StreamOptions | None = None
     user: str | None = None
+    # Present (even `{}`) = let Claude search the web, if the server allows it.
+    web_search_options: WebSearchOptions | None = None
     # Extension: continue a server-side session ("new" starts one). Only the last user message is sent.
     session_id: str | None = None
 
@@ -124,7 +133,13 @@ def usage_json(usage: dict[str, Any]) -> dict:
     }
 
 
-def completion_response(*, completion_id: str, created: int, model: str, text: str, usage: dict[str, Any]) -> dict:
+def completion_response(
+    *, completion_id: str, created: int, model: str, text: str, usage: dict[str, Any], web_searches: int | None = None
+) -> dict:
+    """`web_searches`, when known, is reported as `usage.server_tool_use.web_search_requests` (Anthropic's name)."""
+    usage_out = usage_json(usage)
+    if web_searches is not None:
+        usage_out["server_tool_use"] = {"web_search_requests": web_searches}
     return {
         "id": completion_id,
         "object": "chat.completion",
@@ -138,7 +153,7 @@ def completion_response(*, completion_id: str, created: int, model: str, text: s
                 "logprobs": None,
             }
         ],
-        "usage": usage_json(usage),
+        "usage": usage_out,
     }
 
 

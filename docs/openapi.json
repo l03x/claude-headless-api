@@ -52,7 +52,7 @@
         ],
         "operationId": "createChatCompletion",
         "summary": "Create a chat completion",
-        "description": "Sends the conversation in `messages` to Claude and returns one assistant reply.\n\n- `system` and `developer` messages are joined into Claude's system prompt. Without one, the server's\n  default system prompt (Settings in the dashboard) is used.\n- Earlier `user`/`assistant` turns are passed to Claude as a transcript ahead of the final user message,\n  which must be the last non-system message.\n- `effort` takes precedence over `reasoning_effort`. Without either, the server default is used.\n- Set `session_id` to keep the conversation on the server instead of re-sending history: `\"new\"` starts a\n  session and the response carries its id; an existing id continues it. With `session_id`, only the\n  **last** user message is sent and `response_format` is ignored.\n\n**Streaming.** With `stream: true` the reply arrives as server-sent events (`text/event-stream`), each a\n`data:` line holding a `chat.completion.chunk`: first `delta: {role: \"assistant\"}`, then pieces of\n`delta.content` as Claude writes them, then `finish_reason: \"stop\"`, and finally `data: [DONE]`. With\n`stream_options: {include_usage: true}`, a last chunk with `usage` and empty `choices` comes before\n`[DONE]`.\n\n- Failures before any text (bad key, unknown model, Claude not logged in, …) still return the normal\n  JSON error with its status code.\n- A failure after text was sent arrives as one `data: {\"error\": {…}}` event, with no `[DONE]`.\n- If the client disconnects, the run is stopped; a session turn interrupted that way is not stored.\n\nUnknown OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and\nignored, because `claude -p` has no equivalent. Each call counts towards the token's rate limit and is\nrecorded in the request log.\n",
+        "description": "Sends the conversation in `messages` to Claude and returns one assistant reply.\n\n- `system` and `developer` messages are joined into Claude's system prompt. Without one, the server's\n  default system prompt (Settings in the dashboard) is used.\n- Earlier `user`/`assistant` turns are passed to Claude as a transcript ahead of the final user message,\n  which must be the last non-system message.\n- `effort` takes precedence over `reasoning_effort`. Without either, the server default is used.\n- Set `session_id` to keep the conversation on the server instead of re-sending history: `\"new\"` starts a\n  session and the response carries its id; an existing id continues it. With `session_id`, only the\n  **last** user message is sent and `response_format` is ignored.\n\n**Streaming.** With `stream: true` the reply arrives as server-sent events (`text/event-stream`), each a\n`data:` line holding a `chat.completion.chunk`: first `delta: {role: \"assistant\"}`, then pieces of\n`delta.content` as Claude writes them, then `finish_reason: \"stop\"`, and finally `data: [DONE]`. With\n`stream_options: {include_usage: true}`, a last chunk with `usage` and empty `choices` comes before\n`[DONE]`.\n\n- Failures before any text (bad key, unknown model, Claude not logged in, …) still return the normal\n  JSON error with its status code.\n- A failure after text was sent arrives as one `data: {\"error\": {…}}` event, with no `[DONE]`.\n- If the client disconnects, the run is stopped; a session turn interrupted that way is not stored.\n\n**Web search.** Send `web_search_options` (`{}` is enough) to let Claude use Claude Code's WebSearch tool\nfor this request. It works only if an admin turned on \"Allow web search\" in Settings; otherwise the\nrequest fails with `400 web_search_disabled`. The search runs on Anthropic's side, and Claude decides\nwhether and what to search, so `search_context_size` and `user_location` are accepted and ignored.\nSearching adds cost and latency. Without `web_search_options`, Claude runs with no tools.\n\n- Non-streamed, `content` is the final answer only. Streamed, any text Claude wrote before it\n  searched (\"Let me look that up.\") also arrives, separated from the answer by a blank line.\n- Claude can't fetch pages (no WebFetch): it answers from the search results.\n\nUnknown OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and\nignored, because `claude -p` has no equivalent. Each call counts towards the token's rate limit and is\nrecorded in the request log.\n",
         "requestBody": {
           "required": true,
           "content": {
@@ -161,6 +161,19 @@
                       {
                         "role": "user",
                         "content": "Write a haiku about Rabat."
+                      }
+                    ]
+                  }
+                },
+                "webSearch": {
+                  "summary": "Let Claude search the web",
+                  "value": {
+                    "model": "sonnet",
+                    "web_search_options": {},
+                    "messages": [
+                      {
+                        "role": "user",
+                        "content": "What changed in the latest Python release? Cite your sources."
                       }
                     ]
                   }
@@ -280,7 +293,7 @@
           {
             "lang": "python",
             "label": "Python (openai)",
-            "source": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"http://localhost:8000/v1\", api_key=\"chk_...\")\n\nresponse = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[\n        {\"role\": \"system\", \"content\": \"Answer in one sentence.\"},\n        {\"role\": \"user\", \"content\": \"What is the capital of Morocco?\"},\n    ],\n    reasoning_effort=\"low\",  # or extra_body={\"effort\": \"xhigh\"} for every Claude level\n)\nprint(response.choices[0].message.content)\n\n# Keep the conversation on the server instead of re-sending history:\nfirst = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"Remember the number 42.\"}],\n    extra_body={\"session_id\": \"new\"},\n)\nsession_id = first.model_extra[\"session_id\"]\nagain = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"Which number did I ask you to remember?\"}],\n    extra_body={\"session_id\": session_id},\n)\nprint(again.choices[0].message.content)\n"
+            "source": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"http://localhost:8000/v1\", api_key=\"chk_...\")\n\nresponse = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[\n        {\"role\": \"system\", \"content\": \"Answer in one sentence.\"},\n        {\"role\": \"user\", \"content\": \"What is the capital of Morocco?\"},\n    ],\n    reasoning_effort=\"low\",  # or extra_body={\"effort\": \"xhigh\"} for every Claude level\n)\nprint(response.choices[0].message.content)\n\n# Keep the conversation on the server instead of re-sending history:\nfirst = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"Remember the number 42.\"}],\n    extra_body={\"session_id\": \"new\"},\n)\nsession_id = first.model_extra[\"session_id\"]\nagain = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"Which number did I ask you to remember?\"}],\n    extra_body={\"session_id\": session_id},\n)\nprint(again.choices[0].message.content)\n\n# Let Claude search the web (an admin must allow it in Settings):\nnews = client.chat.completions.create(\n    model=\"sonnet\",\n    messages=[{\"role\": \"user\", \"content\": \"What changed in the latest Python release?\"}],\n    web_search_options={},\n)\nprint(news.choices[0].message.content)\n"
           },
           {
             "lang": "javascript",
@@ -675,7 +688,7 @@
         ],
         "operationId": "sendSessionMessage",
         "summary": "Send a message in a session",
-        "description": "Sends one user message and returns Claude's reply in the `chat.completion` shape, plus `session_id`.\nOnly this message is sent to Claude: the history lives in Claude Code's own transcript, which is\nresumed. `model` and `effort` may change from turn to turn and become the session's new defaults.\n\nBoth the message and the reply are stored and can be read back with `GET /v1/sessions/{session_id}`.\nA failed turn stores nothing, so it can simply be retried. Counts towards the rate limit.\n\nSend `stream: true` for server-sent events, exactly as on `POST /v1/chat/completions` (every chunk also\ncarries `session_id`). A streamed turn that fails or is cut off by a disconnect is not stored, and the\nsession's next turn rebuilds the conversation from the stored messages.\n",
+        "description": "Sends one user message and returns Claude's reply in the `chat.completion` shape, plus `session_id`.\nOnly this message is sent to Claude: the history lives in Claude Code's own transcript, which is\nresumed. `model` and `effort` may change from turn to turn and become the session's new defaults.\n\nBoth the message and the reply are stored and can be read back with `GET /v1/sessions/{session_id}`.\nA failed turn stores nothing, so it can simply be retried. Counts towards the rate limit.\n\nSend `stream: true` for server-sent events, exactly as on `POST /v1/chat/completions` (every chunk also\ncarries `session_id`). A streamed turn that fails or is cut off by a disconnect is not stored, and the\nsession's next turn rebuilds the conversation from the stored messages.\n\nSend `web_search_options` to let Claude search the web for this turn, as on chat completions. A turn\nwithout it, after one that searched, rebuilds the conversation from the stored messages instead of\nresuming Claude's transcript, so it misses the prompt cache once.\n",
         "requestBody": {
           "required": true,
           "content": {
@@ -1094,6 +1107,9 @@
           "stream_options": {
             "$ref": "#/components/schemas/StreamOptions"
           },
+          "web_search_options": {
+            "$ref": "#/components/schemas/WebSearchOptions"
+          },
           "session_id": {
             "type": "string",
             "description": "Extension. `\"new\"` starts a server-side session; an existing session id continues it. With a session,\nonly the last user message is sent and the response includes `session_id`. See the Sessions endpoints.\n",
@@ -1107,6 +1123,27 @@
         "additionalProperties": {
           "description": "Other OpenAI parameters (`temperature`, `top_p`, `max_tokens`, `stop`, `seed`, …) are accepted and ignored."
         }
+      },
+      "WebSearchOptions": {
+        "type": "object",
+        "description": "Present (even as `{}`): Claude may search the web for this request with Claude Code's WebSearch tool.\nThe server must allow it (\"Allow web search\" in Settings), or the request fails with\n`400 web_search_disabled`. The fields are OpenAI's; they are accepted and ignored, because Claude decides\nwhat to search.\n",
+        "properties": {
+          "search_context_size": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "Accepted for compatibility and ignored."
+          },
+          "user_location": {
+            "type": "object",
+            "description": "Accepted for compatibility and ignored.",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
       },
       "StreamOptions": {
         "type": "object",
@@ -1414,6 +1451,9 @@
           },
           "stream_options": {
             "$ref": "#/components/schemas/StreamOptions"
+          },
+          "web_search_options": {
+            "$ref": "#/components/schemas/WebSearchOptions"
           }
         },
         "additionalProperties": true
@@ -1622,7 +1662,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Machine-readable reason:\n\n- `missing_api_key`, `invalid_api_key`, `api_key_revoked`, `api_key_expired` — 401\n- `user_disabled`, `model_not_allowed`, `effort_not_allowed` — 403\n- `model_not_found` — 400 (other 400s have `null`)\n- `session_not_found` — 404\n- `rate_limit_exceeded` — 429\n- `upstream_error` — 500/502, `timeout` — 504 (also sent inside a stream that fails part way)\n"
+                "description": "Machine-readable reason:\n\n- `missing_api_key`, `invalid_api_key`, `api_key_revoked`, `api_key_expired` — 401\n- `user_disabled`, `model_not_allowed`, `effort_not_allowed` — 403\n- `model_not_found`, `web_search_disabled` — 400 (other 400s have `null`)\n- `session_not_found` — 404\n- `rate_limit_exceeded` — 429\n- `upstream_error` — 500/502, `timeout` — 504 (also sent inside a stream that fails part way)\n"
               }
             }
           }
@@ -1646,6 +1686,17 @@
                     "type": "invalid_request_error",
                     "param": null,
                     "code": "model_not_found"
+                  }
+                }
+              },
+              "webSearchDisabled": {
+                "summary": "Web search not allowed on this server",
+                "value": {
+                  "error": {
+                    "message": "Web search is not enabled on this server.",
+                    "type": "invalid_request_error",
+                    "param": null,
+                    "code": "web_search_disabled"
                   }
                 }
               },

@@ -121,6 +121,7 @@ All of these are on the dashboard's **Settings** page and take effect immediatel
 | Legitimate clients hit `429` | Raise the token's rate limit (token page) or the global default |
 | Database growing | Lower *Log retention*; set *Session retention*; keep *Log bodies* off |
 | Runaway cost per request | Set *Budget cap per request* |
+| Clients need current information | Tick *Allow web search*; requests then opt in with `web_search_options`. Each search adds cost and latency. The *Web searches* count is on each log's page and in the `claude.web_searches` metric |
 
 ## Observability (OpenTelemetry → Grafana Alloy)
 

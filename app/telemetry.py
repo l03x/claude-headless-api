@@ -52,6 +52,7 @@ class _Instruments:
     cost: Any
     requests: Any
     ttft: Any
+    web_searches: Any
 
 
 @dataclass
@@ -92,6 +93,9 @@ def _build_instruments(meter) -> _Instruments:
             unit="s",
             description="Streamed runs: time from CLI start to the first text delta (excludes queueing)",
             explicit_bucket_boundaries_advisory=TTFT_BUCKETS_S,
+        ),
+        web_searches=meter.create_counter(
+            "claude.web_searches", unit="{search}", description="Web searches made by Claude runs"
         ),
     )
 
@@ -327,7 +331,8 @@ def record_ttft(model: str, seconds: float) -> None:
 
 
 def record_run(span, *, model: str, effort: str, mode: str, outcome: str, queue_wait_s: float,
-               run_s: float | None, usage: dict | None, cost_usd: float | None, error: str | None = None) -> None:  # fmt: skip
+               run_s: float | None, usage: dict | None, cost_usd: float | None, web_searches: int | None = None,
+               error: str | None = None) -> None:  # fmt: skip
     attrs = {"gen_ai.request.model": model, "claude.effort": effort, "claude.session_mode": mode, "outcome": outcome}
     ins = instruments()
     ins.runs.add(1, attrs)
@@ -351,6 +356,9 @@ def record_run(span, *, model: str, effort: str, mode: str, outcome: str, queue_
     if cost_usd:
         ins.cost.add(cost_usd, {"gen_ai.request.model": model})
         span.set_attribute("claude.cost_usd", cost_usd)
+    if web_searches:
+        ins.web_searches.add(web_searches, {"gen_ai.request.model": model})
+        span.set_attribute("claude.web_searches", web_searches)
     if outcome != "ok":
         span.set_status(Status(StatusCode.ERROR, (error or outcome)[:200]))
 
@@ -384,6 +392,7 @@ def record_request(log, *, code: str | None) -> None:
         "cache_read_tokens": log.cache_read_tokens,
         "cache_creation_tokens": log.cache_creation_tokens,
         "cost_usd": log.cost_usd,
+        "web_searches": log.web_searches,
         "stream": bool(log.stream),
     }
     request_logger.log(

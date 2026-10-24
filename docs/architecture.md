@@ -9,6 +9,7 @@ Deliberate choices. They can look like gaps, so don't "fix" them without discuss
 | Decision | Why |
 |---|---|
 | Claude runs with no tools (`--tools ""`), empty settings and no MCP servers | It's an LLM API, not an agent host. Claude can't run commands or read files on the server, and every caller gets the same behaviour regardless of what is on disk |
+| The one exception is opt-in **WebSearch**, off unless an admin allows it and the request sends `web_search_options`. WebFetch is never enabled | WebSearch runs on Anthropic's side and reaches nothing on this host's network. WebFetch downloads URLs from inside the container, so a prompt could point it at the dashboard, other services on the Docker network or cloud metadata endpoints |
 | Unknown OpenAI parameters (`temperature`, `max_tokens`, …) are accepted and ignored, not rejected | Existing OpenAI clients send them by default. Rejecting them would break drop-in compatibility for settings the CLI can't honour anyway |
 | The Claude Code version is pinned in the image (`CLAUDE_CODE_VERSION`), auto-update is off | A CLI update can change flags or output. Upgrades happen on rebuild, after a check |
 | No `--bare` flag | It disables OAuth, which `CLAUDE_CODE_OAUTH_TOKEN` needs |
@@ -74,6 +75,7 @@ Everything durable lives in one Docker volume mounted at `/data`:
 ```
 claude -p --output-format json --model <m> --effort <e> --tools "" --system-prompt <s>
        --setting-sources "" --strict-mcp-config --disable-slash-commands
+       [--tools WebSearch --allowedTools WebSearch --max-turns 10   (instead of --tools "", web search only)]
        [--no-session-persistence | --session-id <uuid> | --resume <uuid>]
        [--json-schema <schema>] [--max-budget-usd <n>]
 ```
@@ -82,6 +84,7 @@ claude -p --output-format json --model <m> --effort <e> --tools "" --system-prom
 |---|---|
 | `-p --output-format json` | Headless, one JSON result with `result`, `usage`, `total_cost_usd`, `session_id`, `is_error` |
 | `--tools ""` | No tools: Claude can't run commands or touch files. It is a pure text model |
+| `--tools WebSearch --allowedTools WebSearch --max-turns 10` | Web search requests only. Print mode has nobody to answer a permission prompt, so the tool is pre-approved. Each search costs a model turn, and `--max-turns` (`WEB_SEARCH_MAX_TURNS`) bounds a run that keeps searching |
 | `--system-prompt` | Replaces the coding-agent system prompt with the caller's (or the default) |
 | `--setting-sources ""`, `--strict-mcp-config`, `--disable-slash-commands` | Ignore any settings, MCP servers or skills found on disk |
 | `--no-session-persistence` | Stateless calls leave nothing on disk |
@@ -123,6 +126,11 @@ Process hygiene in `run_claude()`:
   during cleanup. So cleanup does its synchronous work first (kill, bookkeeping), shields the `aclose()` calls,
   and the concurrency gate releases its slot without awaiting. An awaiting release would leak a slot on every
   disconnect.
+- **Several turns.** With web search, Claude often writes a sentence, calls the tool, then answers in a
+  new model turn. Text from every top-level turn is streamed, with a blank line between turns. The CLI's
+  `result` holds only the last turn, so when turns were joined the streamed text replaces it in the
+  `ClaudeResult`: a stored session message reads the same after a reload as it did while streaming.
+  Non-streamed replies carry only the final answer.
 - **Telemetry.** Spans are started without being made current (`telemetry.start_claude_span`), because the
   generator resumes in more than one task. `claude.time_to_first_token` records CLI start → first delta.
 
@@ -136,6 +144,8 @@ Implemented in `app/sessions.py`; API in `routers/api.py`, dashboard chat in `ro
 - **Rebuild.** Before resuming, `transcript_paths()` checks that the `.jsonl` exists. If it is gone (volume
   restored without transcripts, manual cleanup), the turn starts a *new* Claude session whose prompt is the
   stored history rendered as a transcript, and `claude_session_id` is replaced.
+  A turn without web search also rebuilds when `transcript_web_search` says the transcript holds WebSearch
+  calls: the API rejects tool calls in a request that defines no tools. Our stored copy has only the text.
 - **One turn at a time per session**, enforced by an `asyncio.Lock` per session id in process memory.
 - **Storage.** Both sides of each successful turn are stored as `ChatMessage` rows (for `GET
   /v1/sessions/{id}` and the dashboard), together with per-session token and cost totals. A failed turn
@@ -201,7 +211,8 @@ models have and the table lacks (`ALTER TABLE … ADD COLUMN`). Other changes ar
 - **Bootstrap.** At startup, if no admin user exists at all, one is created from `ADMIN_USERNAME` /
   `ADMIN_PASSWORD` (an existing user with that name is promoted). Startup fails if neither an admin nor
   these variables exist, and it also refuses the placeholder `SECRET_KEY`.
-- **Isolation of the CLI:** no tools, env allowlist, empty settings and MCP, its own process group.
+- **Isolation of the CLI:** no tools (WebSearch only when allowed and asked for), env allowlist, empty
+  settings and MCP, its own process group.
 - **Not covered yet:** login brute-force protection, 2FA, audit log, TLS (use a reverse proxy). See
   [missing-features.md](missing-features.md).
 

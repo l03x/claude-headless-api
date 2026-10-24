@@ -160,6 +160,9 @@ The fake CLI (`tests/fake_claude.py`):
 - Emulates Claude Code session files under `CLAUDE_CONFIG_DIR/projects/<cwd>/`.
 - Speaks `--output-format stream-json` like the real CLI (requires `--verbose`; with
   `--include-partial-messages` it streams a thinking block, then the text in pieces).
+- With `--tools WebSearch --allowedTools WebSearch` it makes one fake search (`usage.server_tool_use`); streamed,
+  that's a "Searching the web." turn before the answer. Resuming a transcript that holds a search with
+  `--tools ""` fails the way the API does.
 - Switches: `FAKE_CLAUDE_MODE=ok|error|crash|sleep|fail_midway`, `FAKE_CLAUDE_DELTA_DELAY_MS=<ms>` (pause between
   streamed pieces) and `FAKE_CLAUDE_ARGS_FILE=<path>`, which dumps the argv,
   stdin, cwd and env names it received. Use it to assert on flags.

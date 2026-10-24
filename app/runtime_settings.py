@@ -29,6 +29,8 @@ DEFAULTS: dict[str, Any] = {
     "session_retention_days": 0,
     "default_system_prompt": "You are a helpful assistant.",
     "max_budget_usd_per_request": None,
+    # Lets requests opt in to Claude Code's WebSearch tool (web_search_options). Off: no tools at all.
+    "web_search_enabled": False,
 }
 
 

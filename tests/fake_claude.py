@@ -8,6 +8,10 @@ FAKE_CLAUDE_DELTA_DELAY_MS = pause between streamed text deltas.
 
 With `--output-format stream-json` it prints stream-json lines like the real CLI: it requires --verbose,
 and with --include-partial-messages emits `stream_event` deltas (a thinking block, then the text in pieces).
+
+With `--tools WebSearch` (and `--allowedTools WebSearch`, as print mode needs) it makes one search: streamed,
+that is a first turn saying "Searching the web." and calling the tool, then the answer in a second turn.
+Resuming a transcript that holds a search with `--tools ""` fails the way the API does.
 """
 
 import json
@@ -47,6 +51,10 @@ if latency:
 if random.random() < float(os.environ.get("FAKE_CLAUDE_ERROR_RATE") or 0):
     mode = "error"
 
+searching = "WebSearch" in (flag("--tools") or "").split(",")
+if searching and "WebSearch" not in (flag("--allowedTools") or "").split(","):
+    mode = "error"  # print mode: nobody answers the permission prompt, so the run can't search
+
 # Session emulation: transcripts live where the real CLI keeps them.
 session_id = flag("--session-id") or flag("--resume") or "11111111-2222-3333-4444-555555555555"
 suffix = ""
@@ -56,9 +64,14 @@ if flag("--session-id") or flag("--resume"):
     if flag("--resume") and not os.path.exists(path):
         print(json.dumps({"type": "result", "is_error": True, "result": f"No conversation found with session ID: {session_id}"}))
         sys.exit(1)
+    if flag("--resume") and not searching:
+        with open(path) as f:
+            if any(json.loads(line).get("web_search") for line in f):
+                print(json.dumps({"type": "result", "is_error": True, "result": "API Error: 400 Requests which include `tool_use` or `tool_result` blocks must define tools."}))
+                sys.exit(1)
     os.makedirs(project, exist_ok=True)
     with open(path, "a") as f:
-        f.write(json.dumps({"prompt": prompt}) + "\n")
+        f.write(json.dumps({"prompt": prompt, "web_search": searching}) + "\n")
     with open(path) as f:
         suffix = f"#{sum(1 for _ in f)}"
 if mode == "sleep":
@@ -78,6 +91,8 @@ result = {
     "stop_reason": "end_turn",
     "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 3},
 }
+if searching:
+    result["usage"]["server_tool_use"] = {"web_search_requests": 1 if mode != "error" else 0}
 if flag("--json-schema") is not None and mode != "error":
     result["structured_output"] = {"echo": prompt}
 
@@ -96,6 +111,19 @@ def event(e):
 
 text = result["result"]
 emit({"type": "system", "subtype": "init", "session_id": session_id, "model": flag("--model")})
+if mode != "error" and searching and "--include-partial-messages" in sys.argv:
+    event({"type": "message_start", "message": {"id": "msg_search", "role": "assistant", "content": []}})
+    event({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})
+    event({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Searching the web."}})
+    event({"type": "content_block_stop", "index": 0})
+    event({"type": "content_block_start", "index": 1,
+           "content_block": {"type": "tool_use", "id": "toolu_fake", "name": "WebSearch", "input": {}}})
+    event({"type": "content_block_stop", "index": 1})
+    event({"type": "message_delta", "delta": {"stop_reason": "tool_use"}})
+    event({"type": "message_stop"})
+    emit({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_fake", "content": "Web search results: …"}]},
+        "session_id": session_id, "parent_tool_use_id": None})
 if mode != "error" and "--include-partial-messages" in sys.argv:
     delay = float(os.environ.get("FAKE_CLAUDE_DELTA_DELAY_MS") or 0) / 1000
     event({"type": "message_start", "message": {"id": "msg_fake", "role": "assistant", "content": []}})

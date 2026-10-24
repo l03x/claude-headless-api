@@ -98,13 +98,28 @@ DELETE /v1/sessions/<id>               -> {"deleted": true}
 - Ignored without error: `temperature`, `top_p`, `max_tokens`, `stop`, `seed`, `n`, `logprobs`, `tools`.
   To control length or format, ask for it in the prompt.
 
+## Web search
+
+- Add `"web_search_options": {}` to a chat completion or a session message to let Claude search the web
+  for that request. Without it, Claude has no tools and answers from its training data.
+- The server must allow it. If it doesn't, you get `400 web_search_disabled`: drop the option and answer
+  without fresh information, or tell a human.
+- Claude decides whether and what to search. `search_context_size` and `user_location` are ignored, so put
+  the location or the sources you want in the prompt, and ask for citations if you need them.
+- It only searches; it can't open a page you link to.
+- Non-streamed replies report the searches made in `usage.server_tool_use.web_search_requests`, so you
+  can tell a searched answer from one written from training data.
+- Searching is slower and costs more. Ask for it only when the answer depends on recent or external facts.
+- Streamed, you may first get a sentence such as "Let me look that up.", then a blank line, then the answer.
+  Non-streamed replies hold the answer only.
+
 ## Errors and retries
 
 Errors look like `{"error": {"message": "…", "type": "…", "param": null, "code": "…"}}`.
 
 | Status | `code` | What to do |
 |---|---|---|
-| 400 | `model_not_found`, `null` | Fix the request. Don't retry unchanged |
+| 400 | `model_not_found`, `web_search_disabled`, `null` | Fix the request. Don't retry unchanged |
 | 401 | `missing_api_key`, `invalid_api_key`, `api_key_revoked`, `api_key_expired` | Stop. Ask a human for a valid token |
 | 403 | `model_not_allowed`, `effort_not_allowed`, `user_disabled` | Use an allowed model or a lower effort; otherwise stop |
 | 404 | `session_not_found` | The session was deleted or expired. Start a new one and re-send the context you need |

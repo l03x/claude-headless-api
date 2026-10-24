@@ -619,6 +619,7 @@ async def settings_save(request: Request, admin: User = Depends(require_admin), 
             "default_system_prompt": str(form.get("default_system_prompt", "")).strip()
             or runtime_settings.DEFAULTS["default_system_prompt"],
             "max_budget_usd_per_request": _opt_float(form.get("max_budget_usd_per_request")),
+            "web_search_enabled": form.get("web_search_enabled") == "on",
         }
     except ValueError as e:
         flash(request, f"Invalid value: {e}", "error")
@@ -671,6 +672,7 @@ def chat_new(request: Request, admin: User = Depends(require_admin), db: Session
         model=s["default_model"],
         effort=s["default_effort"],
         default_system_prompt=s["default_system_prompt"],
+        web_search_enabled=s["web_search_enabled"],
     )
 
 
@@ -691,6 +693,7 @@ def chat_view(request: Request, session_id: str, admin: User = Depends(require_a
         model=session.model,
         effort=session.effort,
         default_system_prompt=s["default_system_prompt"],
+        web_search_enabled=s["web_search_enabled"],
     )
 
 
@@ -737,6 +740,9 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
         model, effort = _chat_choice(form, settings, session.model, session.effort)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
+    web_search = form.get("web_search") == "1"
+    if web_search and not settings["web_search_enabled"]:
+        return JSONResponse({"error": "Web search is turned off in Settings."}, status_code=400)
 
     started = time.monotonic()
     log = RequestLog(
@@ -746,23 +752,13 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
     )  # fmt: skip
     if form.get("stream") == "1":
         return await _chat_stream(db, session, content, model=model, effort=effort, settings=settings, log=log,
-                                  started=started)  # fmt: skip
+                                  started=started, web_search=web_search)  # fmt: skip
     try:
         gate.resize(int(settings["max_concurrency"]))
-        result = await run_turn(db, session, content, model=model, effort=effort, settings=settings)
+        result = await run_turn(db, session, content, model=model, effort=effort, settings=settings,
+                                web_search=web_search)  # fmt: skip
         record_result(log, result, settings, prompt=content)
-        return {
-            "title": session.title,
-            "reply": result.text,
-            "meta": {
-                "model": model,
-                "effort": effort,
-                "input_tokens": result.usage.get("input_tokens"),
-                "output_tokens": result.usage.get("output_tokens"),
-                "cost_usd": result.cost_usd,
-                "latency_ms": int((time.monotonic() - started) * 1000),
-            },
-        }
+        return {"title": session.title, "reply": result.text, "meta": _chat_meta(model, effort, result, started)}
     except ClaudeError as e:
         log.status, log.http_status, log.error = "error", e.status, e.message
         discarded = session.message_count == 0
@@ -777,19 +773,31 @@ async def chat_send(request: Request, session_id: str, admin: User = Depends(req
         telemetry.record_request(log, code=None if log.status == "ok" else "upstream_error")
 
 
+def _chat_meta(model: str, effort: str, result: ClaudeResult, started: float) -> dict:
+    return {
+        "model": model,
+        "effort": effort,
+        "input_tokens": result.usage.get("input_tokens"),
+        "output_tokens": result.usage.get("output_tokens"),
+        "cost_usd": result.cost_usd,
+        "web_searches": result.web_searches,
+        "latency_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
 def _chat_event(obj: dict) -> bytes:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode()
 
 
 async def _chat_stream(db: Session, session: ChatSession, content: str, *, model: str, effort: str, settings: dict,
-                       log: RequestLog, started: float):  # fmt: skip
+                       log: RequestLog, started: float, web_search: bool):  # fmt: skip
     """The dashboard chat's streamed turn: `data: {"delta": …}` events, then `{"done": …}` or `{"error": …}`."""
     log.stream = True
     gate.resize(int(settings["max_concurrency"]))
     sdb = session_factory()  # the stream outlives this request's DB session
     owned = sdb.get(ChatSession, session.id)
     release_connection(db)
-    events = stream_turn(sdb, owned, content, model=model, effort=effort, settings=settings)
+    events = stream_turn(sdb, owned, content, model=model, effort=effort, settings=settings, web_search=web_search)
 
     def discard_if_empty() -> bool:
         if owned.message_count == 0:  # a conversation whose first turn failed has nothing worth keeping
@@ -817,15 +825,7 @@ async def _chat_stream(db: Session, session: ChatSession, content: str, *, model
                 yield _chat_event({"delta": item})
                 item = await events.__anext__()
             record_result(log, item, settings, prompt=content)
-            meta = {
-                "model": model,
-                "effort": effort,
-                "input_tokens": item.usage.get("input_tokens"),
-                "output_tokens": item.usage.get("output_tokens"),
-                "cost_usd": item.cost_usd,
-                "latency_ms": int((time.monotonic() - started) * 1000),
-            }
-            yield _chat_event({"done": True, "title": owned.title, "meta": meta})
+            yield _chat_event({"done": True, "title": owned.title, "meta": _chat_meta(model, effort, item, started)})
             finished = True
         except ClaudeError as e:
             code = "upstream_error"

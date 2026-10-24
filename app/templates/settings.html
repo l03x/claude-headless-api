@@ -16,6 +16,8 @@
       </div>
       <div class="field"><label>Default system prompt</label><textarea name="default_system_prompt">{{ s.default_system_prompt }}</textarea>
         <div class="help">Used when a request has no system message. Replaces Claude Code's agentic system prompt.</div></div>
+      <h2 style="margin-top:12px">Tools</h2>
+      <div class="field"><label class="check"><input type="checkbox" name="web_search_enabled" {{ 'checked' if s.web_search_enabled }}> Allow web search</label><div class="help">Requests that send <code>web_search_options</code> (and chats with “Search the web” ticked) may use Claude Code's WebSearch tool. Searches run on Anthropic's side and add cost and latency. Other requests still run with no tools.</div></div>
     </div>
     <div class="card">
       <h2>Limits</h2>

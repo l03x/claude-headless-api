@@ -43,7 +43,7 @@
         {% for m in session.messages %}
           <div class="msg {{ m.role }}">
             <div class="bubble" data-md>{{ m.content }}</div>
-            {% if m.role == "assistant" %}<div class="meta">{{ m.model }} · {{ m.effort }} · {{ m.input_tokens|num }} in / {{ m.output_tokens|num }} out · {{ m.cost_usd|cost }}{% if m.latency_ms %} · {{ "%.1f"|format(m.latency_ms / 1000) }}s{% endif %}</div>{% endif %}
+            {% if m.role == "assistant" %}<div class="meta">{{ m.model }} · {{ m.effort }} · {{ m.input_tokens|num }} in / {{ m.output_tokens|num }} out · {{ m.cost_usd|cost }}{% if m.web_searches %} · {{ m.web_searches }} search{{ "es" if m.web_searches != 1 }}{% endif %}{% if m.latency_ms %} · {{ "%.1f"|format(m.latency_ms / 1000) }}s{% endif %}</div>{% endif %}
           </div>
         {% endfor %}
       {% else %}
@@ -63,6 +63,7 @@
       <div class="composer-bar">
         <select id="model" aria-label="Model">{% for m in enabled_models %}<option {{ 'selected' if m == model }}>{{ m }}</option>{% endfor %}</select>
         <select id="effort" aria-label="Effort">{% for e in EFFORTS %}<option {{ 'selected' if e == effort }}>{{ e }}</option>{% endfor %}</select>
+        {% if web_search_enabled %}<label class="check"><input type="checkbox" id="web-search"> Search the web</label>{% endif %}
         <span class="muted" id="status"></span>
         <button class="primary" id="send">Send</button>
       </div>

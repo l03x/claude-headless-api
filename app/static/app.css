@@ -154,8 +154,9 @@ main.chat-main { max-width: none; padding: 0; }
 .messages .empty textarea { margin-top: 8px; }
 .composer { border-top: 1px solid var(--border); padding: 12px 22px 16px; background: var(--panel); }
 .composer textarea { min-height: 64px; max-height: 260px; }
-.composer-bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.composer-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .composer-bar select { width: auto; }
+.composer-bar label.check { white-space: nowrap; }
 .composer-bar #status { flex: 1; }
 @keyframes pulse { 50% { opacity: .45; } }
 @media (max-width: 860px) {

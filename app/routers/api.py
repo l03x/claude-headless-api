@@ -22,6 +22,7 @@ from app.openai_schemas import (
     ConversionError,
     Effort,
     StreamOptions,
+    WebSearchOptions,
     completion_chunk,
     completion_response,
     text_of,
@@ -56,6 +57,7 @@ class SessionMessage(BaseModel):
     reasoning_effort: str | None = None
     stream: bool = False
     stream_options: StreamOptions | None = None
+    web_search_options: WebSearchOptions | None = None
 
 
 # --- shared helpers ----------------------------------------------------------
@@ -89,6 +91,15 @@ def _check_access(token: ApiToken, settings: dict, model: str, effort: str) -> N
         raise APIError(
             403, f"This API key is limited to effort '{token.max_effort}'.", "permission_error", "effort_not_allowed"
         )
+
+
+def _web_search(settings: dict, options: WebSearchOptions | None) -> bool:
+    """Whether this run may search the web: the request asked (`web_search_options`) and the server allows it."""
+    if options is None:
+        return False
+    if not settings["web_search_enabled"]:
+        raise APIError(400, "Web search is not enabled on this server.", code="web_search_disabled")
+    return True
 
 
 def _check_rate_limit(token: ApiToken, settings: dict) -> None:
@@ -258,6 +269,7 @@ def _authed(db: Session, request: Request) -> ApiToken:
 async def _session_turn(
     db: Session, token: ApiToken, settings: dict, log: RequestLog, session: ChatSession, content: str,
     model: str, effort: str, stream: StreamOptions | None = None, discard_on_failure: bool = False,
+    web_search: bool = False,
 ) -> "dict | SSEStream":  # fmt: skip
     """Run one session turn. `stream` (the client's stream options) switches to a streamed reply."""
     log.chat_session_id = session.id
@@ -275,11 +287,13 @@ async def _session_turn(
             sdb.close()
 
         return await _stream_reply(
-            stream_turn(sdb, owned, content, model=model, effort=effort, settings=settings), log=log,
+            stream_turn(sdb, owned, content, model=model, effort=effort, settings=settings, web_search=web_search),
+            log=log,
             settings=settings, model=model, include_usage=stream.include_usage, prompt_for_log=content,
             session_id=session.id, on_close=on_close,
         )  # fmt: skip
-    result = await run_turn(db, session, content, model=model, effort=effort, settings=settings)
+    result = await run_turn(db, session, content, model=model, effort=effort, settings=settings,
+                            web_search=web_search)  # fmt: skip
     record_result(log, result, settings, prompt=content)
     body = completion_response(
         completion_id=f"chatcmpl-{uuid.uuid4().hex}",
@@ -287,6 +301,7 @@ async def _session_turn(
         model=model,
         text=result.text,
         usage=result.usage,
+        web_searches=result.web_searches,
     )
     body["session_id"] = session.id
     return body
@@ -305,6 +320,7 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
 
         stream = (req.stream_options or StreamOptions()) if req.stream else None
         _check_access(token, settings, model, effort)
+        web_search = _web_search(settings, req.web_search_options)
         _check_rate_limit(token, settings)
 
         try:
@@ -317,16 +333,21 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
             content = text_of(req.messages[-1].content)
             if req.session_id != "new":
                 session = _own_session(db, token, req.session_id)
-                return await _session_turn(db, token, settings, log, session, content, model, effort, stream)
+                return await _session_turn(
+                    db, token, settings, log, session, content, model, effort, stream, web_search=web_search
+                )
             session = create_session(
                 db, user=token.user, model=model, effort=effort, system_prompt=system, token_id=token.id
             )
             if stream is not None:  # the stream deletes the session itself if its first turn fails
                 return await _session_turn(
-                    db, token, settings, log, session, content, model, effort, stream, discard_on_failure=True
-                )
+                    db, token, settings, log, session, content, model, effort, stream, discard_on_failure=True,
+                    web_search=web_search,
+                )  # fmt: skip
             try:
-                return await _session_turn(db, token, settings, log, session, content, model, effort)
+                return await _session_turn(
+                    db, token, settings, log, session, content, model, effort, web_search=web_search
+                )
             except ClaudeError:
                 delete_session(db, session)  # don't leave an empty conversation behind
                 log.chat_session_id = None
@@ -347,6 +368,7 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
             "timeout_s": float(settings["request_timeout_s"]),
             "json_schema": json_schema,
             "max_budget_usd": settings["max_budget_usd_per_request"],
+            "web_search": web_search,
         }
         logged_prompt = f"[system]\n{system}\n\n[prompt]\n{prompt}"
         if stream is not None:
@@ -362,6 +384,7 @@ async def chat_completions(request: Request, db: Session = Depends(get_db)):
             model=model,
             text=result.text,
             usage=result.usage,
+            web_searches=result.web_searches,
         )
 
     return await _logged(request, db, "chat.completions", handle)
@@ -431,6 +454,7 @@ async def sessions_message(session_id: str, request: Request, db: Session = Depe
         effort = _resolve_effort(req.effort, raw.get("reasoning_effort"), session.effort)
         log.model, log.effort = model, effort
         _check_access(token, settings, model, effort)
+        web_search = _web_search(settings, req.web_search_options)
         _check_rate_limit(token, settings)
         try:
             content = text_of(req.content)
@@ -439,7 +463,9 @@ async def sessions_message(session_id: str, request: Request, db: Session = Depe
         if not content.strip():
             raise APIError(400, "Message content is empty.")
         stream = (req.stream_options or StreamOptions()) if req.stream else None
-        return await _session_turn(db, token, settings, log, session, content, model, effort, stream)
+        return await _session_turn(
+            db, token, settings, log, session, content, model, effort, stream, web_search=web_search
+        )
 
     return await _logged(request, db, "sessions.messages", handle)
 

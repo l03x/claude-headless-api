@@ -36,6 +36,8 @@ _ENV_PASSTHROUGH = (
 _ERR_EXCERPT = 2000
 # stream-json puts the whole reply on its final `result` line; asyncio's default 64 KiB line limit is too small.
 _STREAM_LINE_LIMIT = 16 * 1024 * 1024
+# Each search costs the model a turn (call, then read the results); this bounds a run that keeps searching.
+WEB_SEARCH_MAX_TURNS = 10
 
 
 @dataclass
@@ -46,6 +48,7 @@ class ClaudeResult:
     cost_usd: float | None = None
     duration_ms: int | None = None
     stop_reason: str | None = None
+    web_searches: int | None = None
 
 
 class ClaudeError(Exception):
@@ -152,6 +155,7 @@ def build_argv(
     session_id: str | None = None,
     resume: str | None = None,
     stream: bool = False,
+    web_search: bool = False,
 ) -> list[str]:
     # stream-json needs --verbose in print mode; --include-partial-messages adds the token-level deltas.
     output = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] if stream else [
@@ -162,7 +166,7 @@ def build_argv(
         *output,
         "--model", model,
         "--effort", effort,
-        "--tools", "",
+        *_tool_args(web_search),
         "--system-prompt", system_prompt,
         "--setting-sources", "",
         "--strict-mcp-config",
@@ -179,6 +183,14 @@ def build_argv(
     if max_budget_usd is not None:
         argv += ["--max-budget-usd", str(max_budget_usd)]
     return argv
+
+
+def _tool_args(web_search: bool) -> list[str]:
+    if not web_search:
+        return ["--tools", ""]
+    # WebSearch runs on Anthropic's side, so it reaches nothing on this host's network (WebFetch would).
+    # Print mode has nobody to answer a permission prompt, so the tool must be pre-approved.
+    return ["--tools", "WebSearch", "--allowedTools", "WebSearch", "--max-turns", str(WEB_SEARCH_MAX_TURNS)]
 
 
 def _child_env() -> dict[str, str]:
@@ -216,6 +228,7 @@ async def run_claude(
     max_budget_usd: float | None = None,
     session_id: str | None = None,
     resume: str | None = None,
+    web_search: bool = False,
 ) -> ClaudeResult:
     """Run one turn. `session_id` starts a persisted session with that id; `resume` continues one.
 
@@ -229,6 +242,7 @@ async def run_claude(
         max_budget_usd=max_budget_usd,
         session_id=session_id,
         resume=resume,
+        web_search=web_search,
     )
     persistent = bool(session_id or resume)
     mode = "resume" if resume else "new" if session_id else "stateless"
@@ -268,6 +282,7 @@ async def run_claude(
                 run_s=run_s,
                 usage=result.usage if result else None,
                 cost_usd=result.cost_usd if result else None,
+                web_searches=result.web_searches if result else None,
                 error=error,
             )
 
@@ -324,14 +339,30 @@ def result_from(data: dict, returncode: int | None) -> ClaudeResult:
 
     structured = data.get("structured_output")
     text = json.dumps(structured) if structured is not None else str(data.get("result") or "")
+    usage = data.get("usage") or {}
     return ClaudeResult(
         text=text,
         session_id=data.get("session_id"),
-        usage=data.get("usage") or {},
+        usage=usage,
         cost_usd=data.get("total_cost_usd"),
         duration_ms=data.get("duration_ms"),
         stop_reason=data.get("stop_reason"),
+        web_searches=_web_searches(data, usage),
     )
+
+
+def _web_searches(data: dict, usage: dict) -> int | None:
+    """Searches the run made: `usage.server_tool_use`, else the per-model totals in `modelUsage`."""
+    server = usage.get("server_tool_use")
+    if isinstance(server, dict) and isinstance(server.get("web_search_requests"), int):
+        return server["web_search_requests"]
+    per_model = data.get("modelUsage")
+    if isinstance(per_model, dict):
+        counts = [m.get("webSearchRequests") for m in per_model.values() if isinstance(m, dict)]
+        counts = [n for n in counts if isinstance(n, int)]
+        if counts:
+            return sum(counts)
+    return None
 
 
 async def stream_claude(
@@ -345,6 +376,7 @@ async def stream_claude(
     max_budget_usd: float | None = None,
     session_id: str | None = None,
     resume: str | None = None,
+    web_search: bool = False,
 ) -> AsyncIterator["str | ClaudeResult"]:
     """Like run_claude, but yields the reply's text deltas as they arrive, then one ClaudeResult.
 
@@ -360,6 +392,7 @@ async def stream_claude(
         session_id=session_id,
         resume=resume,
         stream=True,
+        web_search=web_search,
     )
     persistent = bool(session_id or resume)
     mode = "resume" if resume else "new" if session_id else "stateless"
@@ -410,9 +443,17 @@ async def stream_claude(
             run_s=run_s,
             usage=result.usage if result else None,
             cost_usd=result.cost_usd if result else None,
+            web_searches=result.web_searches if result else None,
             error=error,
         )
         span.end()
+
+
+def _message_start(event: dict) -> bool:
+    """Whether a stream-json event opens a new top-level assistant message (one per model turn)."""
+    if event.get("type") != "stream_event" or event.get("parent_tool_use_id") is not None:
+        return False
+    return (event.get("event") or {}).get("type") == "message_start"
 
 
 def _text_delta(event: dict) -> str | None:
@@ -453,7 +494,8 @@ async def _stream_process(
         stderr_task = asyncio.ensure_future(proc.stderr.read())  # drained alongside, so the pipe never fills
         deadline = time.monotonic() + timeout_s
         final: dict | None = None
-        streamed = False
+        streamed: list[str] = []
+        new_message = joined = False
         try:
             proc.stdin.write(prompt.encode())
             await proc.stdin.drain()
@@ -473,10 +515,18 @@ async def _stream_process(
                     continue
                 if event.get("type") == "result":
                     final = event
+                elif _message_start(event):
+                    new_message = True
                 elif not structured:  # structured output is only meaningful once complete
                     text = _text_delta(event)
                     if text:
-                        streamed = True
+                        if new_message and streamed:
+                            # A tool call split the reply into turns ("Let me search…", then the answer).
+                            streamed.append("\n\n")
+                            joined = True
+                            yield "\n\n"
+                        new_message = False
+                        streamed.append(text)
                         yield text
             await asyncio.wait_for(proc.wait(), max(0.1, deadline - time.monotonic()))
             stderr = await asyncio.wait_for(stderr_task, 5)
@@ -498,6 +548,10 @@ async def _stream_process(
     result = result_from(final, proc.returncode)
     if not streamed and result.text:
         yield result.text  # no deltas arrived (structured output, or a CLI that only sent `result`)
+    if joined:
+        # `result` holds only the last turn's text. Keep what the client was shown, so a stored session
+        # message reads the same after a reload as it did while streaming.
+        result.text = "".join(streamed)
     yield result
 
 

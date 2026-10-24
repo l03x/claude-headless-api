@@ -42,7 +42,8 @@ these terms without notice. If you are unsure about your case, [ask Anthropic](h
   - a light/dark theme.
 - API reference at `/docs`, a brief for AI agents at `/llms.txt`.
 - OpenTelemetry traces, metrics and logs over OTLP (e.g. to Grafana Alloy), off unless configured.
-- Claude runs with no tools: a plain text model.
+- Claude runs with no tools: a plain text model. An admin can allow web search, which a request then opts
+  in to with `web_search_options` (searches add cost and latency).
 
 ## Deploy
 

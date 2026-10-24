@@ -35,6 +35,7 @@ def record_result(log: RequestLog, result: ClaudeResult, settings: dict, prompt:
     log.cache_read_tokens = usage.get("cache_read_input_tokens")
     log.cache_creation_tokens = usage.get("cache_creation_input_tokens")
     log.cost_usd = result.cost_usd
+    log.web_searches = result.web_searches
     if settings["log_bodies"]:
         if prompt is not None:
             log.prompt = prompt

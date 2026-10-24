@@ -59,12 +59,18 @@ def create_session(
     return session
 
 
-def _prepare_turn(db: Session, session: ChatSession, content: str) -> tuple[str, str | None, str | None]:
+def _prepare_turn(
+    db: Session, session: ChatSession, content: str, web_search: bool
+) -> tuple[str, str | None, str | None]:
     """With the session's lock held: (prompt, new Claude session id or None, id to resume or None)."""
     db.refresh(session)
     resume = session.claude_session_id
     if resume and not transcript_paths(resume):
         resume = None  # transcript lost (volume reset, manual cleanup): rebuild from our copy
+    if resume and session.transcript_web_search and not web_search:
+        # The transcript holds WebSearch calls, and the API rejects tool calls in a request that defines no
+        # tools. Rebuild from our copy, which has only the text.
+        resume = None
     new_id = None if resume else str(uuid.uuid4())
     if resume:
         prompt = content
@@ -75,7 +81,7 @@ def _prepare_turn(db: Session, session: ChatSession, content: str) -> tuple[str,
     return prompt, new_id, resume
 
 
-def _run_args(session: ChatSession, settings: dict, model: str, effort: str, new_id, resume) -> dict:
+def _run_args(session: ChatSession, settings: dict, model: str, effort: str, new_id, resume, web_search) -> dict:
     return {
         "model": model,
         "effort": effort,
@@ -84,15 +90,20 @@ def _run_args(session: ChatSession, settings: dict, model: str, effort: str, new
         "max_budget_usd": settings["max_budget_usd_per_request"],
         "session_id": new_id,
         "resume": resume,
+        "web_search": web_search,
     }
 
 
 def _store_turn(db: Session, session: ChatSession, content: str, result: ClaudeResult, *, model: str, effort: str,
-                new_id: str | None, resume: str | None, latency_ms: int) -> None:  # fmt: skip
+                new_id: str | None, resume: str | None, web_search: bool, latency_ms: int) -> None:  # fmt: skip
     now = utcnow()
     usage = result.usage
     tin, tout = usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
     session.claude_session_id = result.session_id or new_id or resume
+    if web_search and result.web_searches != 0:  # unknown counts as searched: a needless rebuild is harmless
+        session.transcript_web_search = True
+    elif new_id:
+        session.transcript_web_search = False
     db.add(ChatMessage(session_id=session.id, role="user", content=content, created_at=now))
     db.add(
         ChatMessage(
@@ -106,6 +117,7 @@ def _store_turn(db: Session, session: ChatSession, content: str, result: ClaudeR
             output_tokens=tout,
             cost_usd=result.cost_usd,
             latency_ms=latency_ms,
+            web_searches=result.web_searches,
         )
     )
     session.model, session.effort = model, effort
@@ -127,15 +139,16 @@ async def run_turn(
     model: str,
     effort: str,
     settings: dict,
+    web_search: bool = False,
 ) -> ClaudeResult:
     """Send one user message in `session` and persist both sides of the exchange."""
     async with _locks[session.id]:
-        prompt, new_id, resume = _prepare_turn(db, session, content)
+        prompt, new_id, resume = _prepare_turn(db, session, content, web_search)
         started = time.monotonic()
-        result = await run_claude(prompt, **_run_args(session, settings, model, effort, new_id, resume))
+        result = await run_claude(prompt, **_run_args(session, settings, model, effort, new_id, resume, web_search))
         latency_ms = int((time.monotonic() - started) * 1000)
         _store_turn(db, session, content, result, model=model, effort=effort, new_id=new_id, resume=resume,
-                    latency_ms=latency_ms)  # fmt: skip
+                    web_search=web_search, latency_ms=latency_ms)  # fmt: skip
         return result
 
 
@@ -147,6 +160,7 @@ async def stream_turn(
     model: str,
     effort: str,
     settings: dict,
+    web_search: bool = False,
 ) -> AsyncIterator["str | ClaudeResult"]:
     """Streaming run_turn: yields text deltas, then the ClaudeResult once the turn is stored.
 
@@ -155,11 +169,11 @@ async def stream_turn(
     into it, so the next turn rebuilds the conversation from the stored messages instead of resuming.
     """
     async with _locks[session.id]:
-        prompt, new_id, resume = _prepare_turn(db, session, content)
+        prompt, new_id, resume = _prepare_turn(db, session, content, web_search)
         started = time.monotonic()
         result = None
         try:
-            events = stream_claude(prompt, **_run_args(session, settings, model, effort, new_id, resume))
+            events = stream_claude(prompt, **_run_args(session, settings, model, effort, new_id, resume, web_search))
             async with aclosing(events):
                 async for item in events:
                     if isinstance(item, ClaudeResult):
@@ -175,7 +189,7 @@ async def stream_turn(
                     db.commit()
         latency_ms = int((time.monotonic() - started) * 1000)
         _store_turn(db, session, content, result, model=model, effort=effort, new_id=new_id, resume=resume,
-                    latency_ms=latency_ms)  # fmt: skip
+                    web_search=web_search, latency_ms=latency_ms)  # fmt: skip
         yield result
 
 

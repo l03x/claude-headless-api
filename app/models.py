@@ -85,6 +85,7 @@ class RequestLog(Base):
     chat_session_id: Mapped[str | None] = mapped_column(String(36), index=True)
     trace_id: Mapped[str | None] = mapped_column(String(32))  # OpenTelemetry trace, when export is on
     stream: Mapped[bool | None] = mapped_column(Boolean)  # reply sent as server-sent events
+    web_searches: Mapped[int | None] = mapped_column(Integer)  # as reported by Claude Code
     prompt: Mapped[str | None] = mapped_column(Text)
     response: Mapped[str | None] = mapped_column(Text)
 
@@ -111,6 +112,8 @@ class ChatSession(Base):
     system_prompt: Mapped[str | None] = mapped_column(Text)
     # Id of the Claude Code transcript this conversation resumes; replaced if it has to be rebuilt.
     claude_session_id: Mapped[str | None] = mapped_column(String(36))
+    # Whether that transcript holds WebSearch calls; a turn without the tool can't resume it (see sessions.py).
+    transcript_web_search: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     message_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -138,5 +141,6 @@ class ChatMessage(Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[float | None] = mapped_column(Float)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    web_searches: Mapped[int | None] = mapped_column(Integer)
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
