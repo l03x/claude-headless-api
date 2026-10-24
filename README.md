@@ -95,6 +95,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requiremen
 .venv/bin/pytest -q
 ```
 
+CI runs the same suite on every pull request; pushes to `main` and `vX.Y.Z` tags also publish the image to
+`ghcr.io/ilyass-bougati/claude-headless-api` ([details](docs/development.md#cicd)).
+
 Load test with [k6](https://k6.io) against test mode (fake Claude CLI, no tokens spent):
 
 ```bash

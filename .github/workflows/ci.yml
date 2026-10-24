@@ -1,0 +1,46 @@
+name: CI
+
+# Pushes to main and version tags run these tests through cd.yml (workflow_call) before publishing, so they're
+# left out here to avoid running the suite twice.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the local venv (the floor the code must stay compatible with), 3.12 is the image.
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: OpenAPI JSON is up to date
+        run: python scripts/export_openapi.py --check
+
+      # The suite never calls the real Claude CLI: conftest points CLAUDE_BIN at tests/fake_claude.py.
+      - name: Run tests
+        run: pytest -q

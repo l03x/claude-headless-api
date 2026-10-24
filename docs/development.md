@@ -119,3 +119,20 @@ Add `CLAUDE_BIN=tests/fake_claude.py` to the environment to get canned replies i
 
 The operator does this (see docs/operations.md): `docker compose up -d --build`. It rebuilds the image and
 recreates the container while keeping `.env` and the data volume. Agents should not run it unless asked.
+
+## CI/CD
+
+GitHub Actions, in `.github/workflows/`:
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| `ci.yml` | pull requests, pushes to branches other than `main`, manual | `export_openapi.py --check` and `pytest -q` on Python 3.10 (the local floor) and 3.12 (the image) |
+| `cd.yml` | pushes to `main`, tags `vX.Y.Z`, manual | runs `ci.yml`, builds the image, boots it and waits for `/healthz`, then pushes it to `ghcr.io/ilyass-bougati/claude-headless-api` |
+
+Image tags: `main` + `latest` + `sha-<short>` from `main`; `X.Y.Z` + `X.Y` + `sha-<short>` from a tag. To cut a
+release, push a tag: `git tag v1.2.0 && git push origin v1.2.0`.
+
+CI never needs a Claude credential: the tests use the fake CLI and the smoke test only checks startup and
+`/healthz`. Keep it that way; don't add repository secrets for Claude. Publishing uses the built-in
+`GITHUB_TOKEN` (`packages: write`), so there is nothing to configure.
+

@@ -1,0 +1,99 @@
+name: CD
+
+# Publishes the container image to GHCR after the test suite passes:
+#   push to main  -> :main, :latest, :sha-<short>
+#   tag vX.Y.Z    -> :X.Y.Z, :X.Y, :sha-<short>
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Build and push image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # metadata-action lowercases the name, which GHCR requires.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: claude-headless-api:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Boot the image on a fresh database and wait for /healthz, so a broken image is never pushed. No Claude
+      # credential is given: startup and the health check don't need one.
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 8000:8000 \
+            -e SECRET_KEY=ci-smoke -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=ci-smoke-password \
+            claude-headless-api:smoke
+          for _ in $(seq 30); do
+            if curl -fsS http://127.0.0.1:8000/healthz; then
+              docker exec smoke claude --version
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs smoke
+          exit 1
+
+      - name: Remove smoke container
+        if: always()
+        run: docker rm -f smoke >/dev/null 2>&1 || true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same inputs as the build step, so this reuses its cache and only uploads.
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

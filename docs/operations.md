@@ -62,6 +62,20 @@ docker compose up -d --build
 The schema is upgraded automatically for added tables and nullable columns. Read the release notes for any
 manual migration first.
 
+**Prebuilt image instead of building on the host:** CI publishes every push to `main` and every `vX.Y.Z` tag to
+GHCR (see [CI/CD](development.md#cicd)). Pull it and tag it with the name `docker-compose.yml` uses; `up` without
+`--build` then runs it:
+
+```bash
+docker pull ghcr.io/ilyass-bougati/claude-headless-api:latest      # or :1.2.3, :sha-abc1234
+docker tag ghcr.io/ilyass-bougati/claude-headless-api:latest claude-headless-api:latest
+docker compose up -d
+```
+
+New GHCR packages are private: either make the package public on GitHub or `docker login ghcr.io` first. A
+prebuilt image carries the Dockerfile's default `CLAUDE_CODE_VERSION`; the value in `.env` only applies when you
+build.
+
 **Claude Code version:** set `CLAUDE_CODE_VERSION=x.y.z` in `.env` (it is a build argument), then
 `docker compose up -d --build`. Afterwards check the version on the System page and run Test Claude. Auto-update
 is disabled inside the container on purpose, so the version only changes when you rebuild.
